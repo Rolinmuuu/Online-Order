@@ -22,6 +22,7 @@ CREATE TABLE carts
     id          SERIAL PRIMARY KEY NOT NULL,
     customer_id INTEGER UNIQUE     NOT NULL,
     total_price NUMERIC            NOT NULL,
+    version     BIGINT             NOT NULL DEFAULT 0,
     CONSTRAINT fk_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
 );
 
@@ -51,7 +52,7 @@ CREATE TABLE menu_items
 CREATE TABLE order_items
 (
     id           SERIAL PRIMARY KEY NOT NULL,
-    menu_item_id INTEGER            NOT NULL,
+    menu_item_id INTEGER UNIQUE     NOT NULL,
     cart_id      INTEGER            NOT NULL,
     price        NUMERIC            NOT NULL,
     quantity     INTEGER            NOT NULL,
@@ -67,6 +68,11 @@ CREATE TABLE authorities
     authority TEXT               NOT NULL,
     CONSTRAINT fk_customer FOREIGN KEY (email) REFERENCES customers (email) ON DELETE CASCADE
 );
+
+
+CREATE INDEX idx_menu_items_restaurant_id ON menu_items(restaurant_id);
+CREATE INDEX idx_order_items_cart_id ON order_items(cart_id);
+CREATE INDEX idx_customers_email ON customers(email);
 
 
 INSERT INTO restaurants (name, address, image_url, phone)

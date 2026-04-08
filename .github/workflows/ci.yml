@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+      
+      - name: Add auth of Gradle
+        run: chmod +x gradlew
+        working-directory: ./OnlineOrder
+
+      - name: Run tests
+        run: ./gradlew test
+        working-directory: ./OnlineOrder
+
+      - name: Build with Gradle (Construct JAR file)
+        run: ./gradlew build -x test
+        working-directory: ./OnlineOrder
+    services:
+      db:
+        image: postgres:15.2-alpine
+        env:
+          POSTGRES_DB: onlineorder
+          POSTGRES_PASSWORD: secret
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres -d onlineorder"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 30s
+      redis:
+        image: redis:7.0-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 30s
+    env:
+      DATABASE_URL: localhost
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: secret
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      INIT_DB: always

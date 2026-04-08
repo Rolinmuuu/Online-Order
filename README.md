@@ -1,57 +1,179 @@
-# 在线订单系统
+# Online Order — High-Concurrency E-Commerce Platform
 
-这是一个在线订单系统，旨在提供一个方便、高效的订购平台。
+A full-stack online food ordering platform inspired by DoorDash, built with **Spring Boot**, **React**, **PostgreSQL**, and **Redis**, deployed on **AWS**.
 
-## 项目概述
+---
 
-本项目是一个用于处理在线订单的应用程序。它可能包括以下功能：
+## Architecture Overview
 
-- 用户注册与登录
-- 商品浏览与搜索
-- 购物车管理
-- 订单创建与支付
-- 订单状态查询
-- 管理员后台管理
+```
+┌─────────────────────────────────────┐
+│         React + Ant Design SPA      │
+│   (CartContext · polling · fetch)   │
+└──────────────┬──────────────────────┘
+               │ HTTP REST
+┌──────────────▼──────────────────────┐
+│        Spring Boot MVC Backend      │
+│  CustomerController · MenuController│
+│  CartController · Spring Security   │
+└────────┬──────────────┬─────────────┘
+         │              │
+┌────────▼───────┐  ┌───▼────────────┐
+│  PostgreSQL    │  │  Redis Cache   │
+│  (AWS RDS)     │  │  (menu / cart) │
+└────────────────┘  └────────────────┘
+```
 
-## 技术栈 (可能包含)
+---
 
-- **后端**: Java (根据 GitHub 仓库语言分析)
-- **前端**: (待定，可能包含 HTML, CSS, JavaScript 框架如 React, Vue 等)
-- **数据库**: (待定，可能为 MySQL, PostgreSQL 等)
-- **构建工具**: (待定，如 Maven, Gradle 等)
+## Key Features
 
-## 快速开始
+- **User Auth** — Registration (`POST /signup`) and form-based login/logout via Spring Security; passwords stored with `BCryptPasswordEncoder`
+- **Menu Browsing** — Browse all restaurants and menus; results cached in Redis with 60-min TTL (`@Cacheable`)
+- **Shopping Cart** — Add items, view cart, and checkout; cart state managed with React Context and auto-polled every 5 s for cross-session synchronization
+- **Optimistic Locking** — `@Version` field on `CartEntity` prevents lost-update race conditions during concurrent checkout
+- **Transactional Operations** — `addMenuItemToCart` and `clearCart` both annotated with `@Transactional`
+- **Query Indexing** — Explicit indexes on `menu_items.restaurant_id`, `order_items.cart_id`, and `customers.email` for sub-millisecond lookups
+- **Containerization** — Multi-service `docker-compose` (PostgreSQL + Redis) for local dev; production image built via `Dockerfile` and pushed to **AWS ECR**, deployed on **AWS App Runner**
+- **CI Pipeline** — GitHub Actions workflow runs unit tests + Gradle build on every push/PR to `main`, with PostgreSQL and Redis service containers
 
-### 前提条件
+---
 
-- Java Development Kit (JDK)
-- Git
-- (其他依赖，如数据库，如果需要)
+## Tech Stack
 
-### 安装
+| Layer | Technology |
+|---|---|
+| Backend | Java 21 · Spring Boot 3 · Spring MVC · Spring Security · Spring Data JDBC |
+| Frontend | React 18 · Ant Design 4 · React Context (centralized state) |
+| Database | PostgreSQL 15 (AWS RDS) |
+| Caching | Redis 7 (`@Cacheable` / `@CacheEvict`) |
+| Build | Gradle 8 |
+| Container | Docker · AWS ECR · AWS App Runner |
+| CI | GitHub Actions |
+| Testing | JUnit 5 · Mockito · Postman Collection |
 
-1. 克隆仓库:
-   ```bash
-   git clone https://github.com/Rolinmuuu/Online-Order.git
-   ```
-2. 进入项目目录:
-   ```bash
-   cd Online-Order
-   ```
-3. 构建项目 (如果适用):
-   ```bash
-   # 例如，如果您使用 Maven
-   mvn clean install
-   ```
+---
 
-### 运行
+## Project Structure
 
-(这里需要根据实际的项目结构和运行方式进行补充，例如如何启动后端服务和前端应用。)
+```
+Online-Order/
+├── OnlineOrder/                    # Spring Boot backend
+│   ├── src/main/java/.../
+│   │   ├── controller/             # REST controllers (Cart, Menu, Customer)
+│   │   ├── service/                # Business logic
+│   │   ├── repository/             # Spring Data JDBC repositories
+│   │   ├── entity/                 # Table-mapped records
+│   │   ├── model/                  # DTOs and request bodies
+│   │   └── AppConfig.java          # Security + Redis cache config
+│   ├── src/main/resources/
+│   │   ├── application.yml         # Datasource, Redis, cache settings
+│   │   └── database-init.sql       # DDL + seed data + indexes
+│   ├── src/test/                   # Unit tests (JUnit 5 + Mockito)
+│   ├── Dockerfile
+│   └── docker-compose.yml          # Local dev: PostgreSQL + Redis
+├── doordash-app/                   # React frontend
+│   └── src/
+│       ├── context/CartContext.js  # Centralized cart state + 5 s polling
+│       ├── components/
+│       │   ├── FoodList.js         # Restaurant & menu browsing
+│       │   ├── MyCart.js           # Cart drawer + checkout
+│       │   ├── LoginForm.js
+│       │   └── SignupForm.js
+│       └── utils.js                # fetch-based API client
+├── postman/
+│   └── OnlineOrder.postman_collection.json   # API integration tests
+└── .github/workflows/ci.yml        # GitHub Actions CI
+```
 
-## 贡献
+---
 
-欢迎任何形式的贡献！如果您有任何建议或发现错误，请随时提出 Issue 或 Pull Request。
+## API Endpoints
 
-## 许可证
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/signup` | Public | Register new user |
+| `POST` | `/login` | Public | Form login (Spring Security) |
+| `POST` | `/logout` | Public | Logout |
+| `GET` | `/restaurants/menu` | Public | All restaurants with menus (Redis cached) |
+| `GET` | `/restaurant/{id}/menu` | Public | Menu items for one restaurant |
+| `GET` | `/cart` | Required | Get current user's cart |
+| `POST` | `/cart` | Required | Add item to cart |
+| `POST` | `/cart/checkout` | Required | Clear cart (checkout) |
 
-(待定，通常会在这里说明项目的许可证)
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Java 21
+- Docker & Docker Compose
+- Node.js 18+ / npm
+
+### 1. Start local infrastructure
+
+```bash
+cd OnlineOrder
+docker compose up -d
+```
+
+This starts PostgreSQL (port 5432) and Redis (port 6379). The database schema and seed data are applied automatically on first start.
+
+### 2. Run the backend
+
+```bash
+cd OnlineOrder
+./gradlew bootRun
+```
+
+The server starts on `http://localhost:8080`.
+
+### 3. Run the frontend (development)
+
+```bash
+cd doordash-app
+npm install
+npm start
+```
+
+The React app starts on `http://localhost:3000` and proxies API calls to `:8080`.
+
+---
+
+## Running Tests
+
+### Backend unit tests (JUnit + Mockito)
+
+```bash
+cd OnlineOrder
+./gradlew test
+```
+
+13 unit tests covering `CartService`, `CustomerService`, `MenuItemService`, and `RestaurantService`.
+
+### API integration tests (Postman)
+
+Import `postman/OnlineOrder.postman_collection.json` into Postman. The collection includes 11 requests covering auth, menu browsing, cart operations, and checkout validation.
+
+---
+
+## Environment Variables
+
+The backend reads the following environment variables (set automatically by `docker-compose` or AWS App Runner):
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL host |
+| `DATABASE_PORT` | PostgreSQL port (default `5432`) |
+| `DATABASE_USERNAME` | PostgreSQL username |
+| `DATABASE_PASSWORD` | PostgreSQL password |
+| `REDIS_HOST` | Redis host |
+| `REDIS_PORT` | Redis port (default `6379`) |
+| `INIT_DB` | `always` to re-run DDL on startup, `never` otherwise |
+
+---
+
+## License
+
+MIT
