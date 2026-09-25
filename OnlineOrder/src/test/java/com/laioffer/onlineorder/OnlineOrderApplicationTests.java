@@ -14,7 +14,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 // Background loops off: this context must not compete with other tests for the database.
-@SpringBootTest(properties = {"app.background-jobs.enabled=false", "spring.cache.type=simple"})
+// Reset on start: the context gets a freshly migrated schema, which also exercises the migrations
+// and the reset strategy exactly as the application runs them.
+@SpringBootTest(properties = {"app.background-jobs.enabled=false", "spring.cache.type=simple",
+        "app.db.reset-on-start=true"})
 class OnlineOrderApplicationTests {
 
     @Autowired

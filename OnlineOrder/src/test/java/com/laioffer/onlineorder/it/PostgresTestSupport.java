@@ -19,13 +19,12 @@ import com.laioffer.onlineorder.platform.OutboxHandlers;
 import com.laioffer.onlineorder.platform.Tx;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 import java.time.Clock;
 import java.util.ArrayList;
@@ -44,8 +43,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Integration tests run against a real PostgreSQL, because the guarantees under test (row locks,
  * conditional updates, unique constraints, deferred triggers, NOTIFY on commit) are the
- * database's. Each test starts from a fresh schema loaded from database-init.sql through the
- * same script runner Spring Boot uses at startup.
+ * database's. Each test starts from a fresh schema: Flyway drops everything and applies the same
+ * migrations (schema and sample menu) the application runs at startup.
  *
  * <p>Connection: TEST_DATABASE_URL (default jdbc:postgresql://localhost:5432/onlineorder_test — a
  * database of its own: the schema is dropped and rebuilt for every test),
@@ -55,6 +54,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 abstract class PostgresTestSupport {
 
     static HikariDataSource dataSource;
+    static Flyway flyway;
     static final String SECRET = "test-webhook-secret";
 
     JdbcTemplate jdbc;
@@ -96,6 +96,11 @@ abstract class PostgresTestSupport {
         c.setPassword(env("TEST_DATABASE_PASSWORD", "secret"));
         c.setMaximumPoolSize(60);
         dataSource = new HikariDataSource(c);
+        flyway = Flyway.configure()
+                .dataSource(dataSource)
+                .locations("classpath:db/migration", "classpath:db/seed")
+                .cleanDisabled(false)
+                .load();
     }
 
     @AfterAll
@@ -110,7 +115,8 @@ abstract class PostgresTestSupport {
 
     @BeforeEach
     void freshSchema() {
-        new ResourceDatabasePopulator(new ClassPathResource("database-init.sql")).execute(dataSource);
+        flyway.clean();
+        flyway.migrate();
         jdbc = new JdbcTemplate(dataSource);
         tx = new Tx(new DataSourceTransactionManager(dataSource));
         json = new ObjectMapper();

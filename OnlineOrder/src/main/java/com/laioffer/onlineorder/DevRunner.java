@@ -32,7 +32,7 @@ public class DevRunner implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) throws Exception {
-        // Demo accounts. Skipped when they already exist (INIT_DB=never keeps the data).
+        // Demo accounts. Skipped when they already exist (the database keeps its data across restarts).
         if (customerService.getCustomerByEmail("foo@mail.com") == null) {
             customerService.signUp("foo@mail.com", "123456", "Foo", "Bar");
         }

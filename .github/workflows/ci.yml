@@ -38,7 +38,6 @@ jobs:
       DATABASE_PASSWORD: secret
       REDIS_HOST: localhost
       REDIS_PORT: 6379
-      INIT_DB: always
       # integration tests (src/test/java/.../it) get a database of their own: they rebuild the
       # schema before every test, and must not share one with the Spring context test
       TEST_DATABASE_URL: jdbc:postgresql://localhost:5432/onlineorder_test

@@ -10,6 +10,9 @@ server:
 app:
   # Demo mode: sample accounts (DevRunner) and the simulated card processor. Turn off anywhere real.
   demo: ${APP_DEMO:true}
+  db:
+    # Drop everything and migrate from scratch at startup (fresh demo stock). Demo mode only.
+    reset-on-start: ${DB_RESET_ON_START:false}
   background-jobs:
     enabled: ${BACKGROUND_JOBS:true}
 
@@ -26,10 +29,13 @@ spring:
     username: ${DATABASE_USERNAME:postgres}
     password: ${DATABASE_PASSWORD:secret}
     driver-class-name: org.postgresql.Driver
-  sql:
-    init:
-      mode: ${INIT_DB:always}
-      schema-locations: "classpath:database-init.sql"
+  flyway:
+    # db/migration is the schema; db/seed is the sample menu (a repeatable migration). A real
+    # deployment that manages its own menu sets FLYWAY_LOCATIONS=classpath:db/migration.
+    locations: ${FLYWAY_LOCATIONS:classpath:db/migration,classpath:db/seed}
+    # A database created by the old database-init.sql (no history table) is adopted as V1.
+    baseline-on-migrate: true
+    baseline-version: 1
   data:
     redis:
       host: ${REDIS_HOST:localhost}
