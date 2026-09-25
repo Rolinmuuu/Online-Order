@@ -1,4 +1,23 @@
+server:
+  servlet:
+    session:
+      cookie:
+        # The session cookie is never sent on cross-site requests, so another site cannot make a
+        # signed-in browser place, cancel or reject orders (CSRF tokens are off for this JSON API).
+        same-site: strict
+        http-only: true
+
+app:
+  # Demo mode: sample accounts (DevRunner) and the simulated card processor. Turn off anywhere real.
+  demo: ${APP_DEMO:true}
+  background-jobs:
+    enabled: ${BACKGROUND_JOBS:true}
+
 spring:
+  task:
+    scheduling:
+      pool:
+        size: 4   # outbox dispatcher, expiry sweeper, SSE heartbeat and housekeeping don't queue behind each other
   jackson:
     default-property-inclusion: non_null
     property-naming-strategy: SNAKE_CASE
@@ -16,9 +35,21 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
   cache:
-    type: redis
+    type: ${CACHE_TYPE:redis}
     redis:
       time-to-live: 60000
+
+orders:
+  pay-within-seconds: ${ORDER_PAY_WITHIN_SECONDS:900}   # unpaid orders are cancelled after this
+  expiry-sweep-ms: 5000
+
+payments:
+  webhook-secret: ${PAYMENT_WEBHOOK_SECRET:dev-only-webhook-secret}
+  simulated:
+    delay-ms: 1200
+
+outbox:
+  poll-ms: 500
 
 logging:
   level:

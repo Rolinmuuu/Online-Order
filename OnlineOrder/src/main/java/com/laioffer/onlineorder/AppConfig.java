@@ -22,6 +22,7 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import java.time.Duration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
 import javax.sql.DataSource;
 
@@ -36,7 +37,7 @@ public class AppConfig {
         userDetailsManager.setCreateUserSql("INSERT INTO customers (email, password, enabled) VALUES (?,?,?)");
         userDetailsManager.setCreateAuthoritySql("INSERT INTO authorities (email, authority) values (?,?)");
         userDetailsManager.setUsersByUsernameQuery("SELECT email, password, enabled FROM customers WHERE email = ?");
-        userDetailsManager.setAuthoritiesByUsernameQuery("SELECT email, authorities FROM authorities WHERE email = ?");
+        userDetailsManager.setAuthoritiesByUsernameQuery("SELECT email, authority FROM authorities WHERE email = ?");
         return userDetailsManager;
     }
 
@@ -54,9 +55,11 @@ public class AppConfig {
                 .authorizeHttpRequests(auth ->
                         auth
                                 .requestMatchers(PathRequest.toStaticResources().atCommonLocations()).permitAll()
-                                .requestMatchers(HttpMethod.GET, "/", "/index.html", "/*.json", "/*.png", "/static/**").permitAll()
+                                .requestMatchers(HttpMethod.GET, "/", "/index.html", "/*.json", "/*.png", "/*.ico", "/*.txt", "/static/**").permitAll()
                                 .requestMatchers(HttpMethod.POST, "/login", "/logout", "/signup").permitAll()
-                                .requestMatchers(HttpMethod.GET, "/restaurants/**", "/restaurant/**").permitAll()
+                                .requestMatchers(HttpMethod.GET, "/restaurants/**", "/restaurant/**", "/inventory", "/food/**").permitAll()
+                                // The payment provider authenticates with an HMAC signature, not a session.
+                                .requestMatchers(HttpMethod.POST, "/payments/webhook").permitAll()
                                 .anyRequest().authenticated()
                 )
                 .exceptionHandling(exception -> exception
@@ -73,7 +76,9 @@ public class AppConfig {
     }
 
 
+    // CACHE_TYPE=simple runs the app with PostgreSQL as its only dependency (in-memory cache).
     @Bean
+    @ConditionalOnProperty(name = "spring.cache.type", havingValue = "redis", matchIfMissing = true)
     public RedisCacheManager cacheManager(RedisConnectionFactory factory) {
         RedisCacheConfiguration config = RedisCacheConfiguration.defaultCacheConfig()
                 .entryTtl(Duration.ofMinutes(60))

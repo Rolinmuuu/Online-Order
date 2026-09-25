@@ -1,3 +1,18 @@
+-- Order, payment and platform tables (see docs/ARCHITECTURE.md). Dropped first: they reference the tables below.
+DROP TABLE IF EXISTS ledger_entries CASCADE;
+DROP TABLE IF EXISTS payment_events CASCADE;
+DROP TABLE IF EXISTS payments CASCADE;
+DROP TABLE IF EXISTS outbox CASCADE;
+DROP TABLE IF EXISTS notifications CASCADE;
+DROP TABLE IF EXISTS idempotency_keys CASCADE;
+DROP TABLE IF EXISTS order_events CASCADE;
+DROP TABLE IF EXISTS order_lines CASCADE;
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS inventory CASCADE;
+DROP TABLE IF EXISTS restaurant_staff CASCADE;
+DROP FUNCTION IF EXISTS assert_ledger_txn_balanced() CASCADE;
+DROP FUNCTION IF EXISTS forbid_ledger_changes() CASCADE;
+
 DROP TABLE IF EXISTS order_items;
 DROP TABLE IF EXISTS menu_items;
 DROP TABLE IF EXISTS restaurants;
@@ -52,10 +67,13 @@ CREATE TABLE menu_items
 CREATE TABLE order_items
 (
     id           SERIAL PRIMARY KEY NOT NULL,
-    menu_item_id INTEGER UNIQUE     NOT NULL,
+    menu_item_id INTEGER            NOT NULL,
     cart_id      INTEGER            NOT NULL,
     price        NUMERIC            NOT NULL,
     quantity     INTEGER            NOT NULL,
+    -- one row per item per cart (a global UNIQUE on menu_item_id let only one cart in the
+    -- whole system hold a given dish)
+    CONSTRAINT uq_order_items_cart_menu_item UNIQUE (cart_id, menu_item_id),
     CONSTRAINT fk_cart FOREIGN KEY (cart_id) REFERENCES carts (id) ON DELETE CASCADE,
     CONSTRAINT fk_menu_item FOREIGN KEY (menu_item_id) REFERENCES menu_items (id) ON DELETE CASCADE
 );
@@ -75,146 +93,195 @@ CREATE INDEX idx_order_items_cart_id ON order_items(cart_id);
 CREATE INDEX idx_customers_email ON customers(email);
 
 
-INSERT INTO restaurants (name, address, image_url, phone)
-VALUES ('Burger King', '773 N Mathilda Ave, Sunnyvale, CA 94085',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/store%2Fheader%2F10171.png',
-        '(408) 736-0101'),
-       ('SGD Tofu House', '3450 El Camino Real #105, Santa Clara, CA 95051',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/store%2Fheader%2F1579.jpg',
-        '(408) 261-3030'),
-       ('Fashion Wok', '163 S Murphy Ave, Sunnyvale, CA 94086',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/store%2Fheader%2F273997.jpg',
-        '(408) 739-8866');
 
+
+-- ─────────────────────────── Ordering (strongly consistent core) ───────────────────────────
+-- Everything below lives in the same PostgreSQL database and changes inside ACID transactions.
+-- Money is stored as integer cents (BIGINT), never as floating point.
+
+-- Staff accounts allowed to run a restaurant's kitchen board.
+CREATE TABLE restaurant_staff
+(
+    email         TEXT    NOT NULL REFERENCES customers (email) ON DELETE CASCADE,
+    restaurant_id INTEGER NOT NULL REFERENCES restaurants (id) ON DELETE CASCADE,
+    PRIMARY KEY (email, restaurant_id)
+);
+
+-- Limited daily stock. Items without a row are unlimited. The CHECK is the last line of
+-- defence: whatever the application does, available can never go below zero.
+CREATE TABLE inventory
+(
+    menu_item_id INTEGER PRIMARY KEY REFERENCES menu_items (id) ON DELETE CASCADE,
+    available    INTEGER NOT NULL CHECK (available >= 0)
+);
+
+CREATE TABLE orders
+(
+    id            BIGSERIAL PRIMARY KEY,
+    customer_id   INTEGER     NOT NULL REFERENCES customers (id),
+    restaurant_id INTEGER     NOT NULL REFERENCES restaurants (id),
+    status        TEXT        NOT NULL CHECK (status IN ('PLACED', 'PAID', 'ACCEPTED', 'READY', 'COMPLETED', 'CANCELLED')),
+    total_cents   BIGINT      NOT NULL CHECK (total_cents >= 0),
+    version       BIGINT      NOT NULL DEFAULT 0,
+    pay_by        TIMESTAMPTZ NOT NULL,
+    cancel_reason TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_orders_customer ON orders (customer_id, id DESC);
+CREATE INDEX idx_orders_restaurant_status ON orders (restaurant_id, status, id);
+-- Partial index: the expiry sweeper only ever looks at unpaid orders.
+CREATE INDEX idx_orders_unpaid_pay_by ON orders (pay_by) WHERE status = 'PLACED';
+
+-- Price and name are copied at checkout: later menu edits must not change past orders.
+CREATE TABLE order_lines
+(
+    order_id         BIGINT  NOT NULL REFERENCES orders (id) ON DELETE CASCADE,
+    menu_item_id     INTEGER NOT NULL REFERENCES menu_items (id),
+    name             TEXT    NOT NULL,
+    unit_price_cents BIGINT  NOT NULL CHECK (unit_price_cents >= 0),
+    quantity         INTEGER NOT NULL CHECK (quantity > 0),
+    PRIMARY KEY (order_id, menu_item_id)
+);
+
+-- Append-only audit trail of every status change.
+CREATE TABLE order_events
+(
+    id          BIGSERIAL PRIMARY KEY,
+    order_id    BIGINT      NOT NULL REFERENCES orders (id) ON DELETE CASCADE,
+    from_status TEXT,
+    to_status   TEXT        NOT NULL,
+    actor       TEXT        NOT NULL,
+    reason      TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_order_events_order ON order_events (order_id, id);
+
+-- Idempotent checkout: the key is claimed by an INSERT in the checkout transaction itself,
+-- so the key and the order it produced commit (or roll back) together.
+CREATE TABLE idempotency_keys
+(
+    customer_id  INTEGER     NOT NULL REFERENCES customers (id) ON DELETE CASCADE,
+    key          TEXT        NOT NULL,
+    request_hash TEXT        NOT NULL,
+    order_id     BIGINT REFERENCES orders (id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (customer_id, key)
+);
+
+-- Transactional outbox: side effects recorded in the same transaction as the state change,
+-- delivered by a dispatcher that claims rows with FOR UPDATE SKIP LOCKED.
+CREATE TABLE outbox
+(
+    id           BIGSERIAL PRIMARY KEY,
+    topic        TEXT        NOT NULL,
+    payload      JSONB       NOT NULL,
+    attempts     INTEGER     NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_outbox_pending ON outbox (available_at, id) WHERE processed_at IS NULL;
+
+-- What the outbox handlers produce in this demo (stands in for e-mail / push delivery).
+CREATE TABLE notifications
+(
+    id          BIGSERIAL PRIMARY KEY,
+    outbox_id   BIGINT      NOT NULL UNIQUE,
+    customer_id INTEGER     NOT NULL,
+    order_id    BIGINT      NOT NULL,
+    message     TEXT        NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ─────────────────────────── Payments ───────────────────────────
+
+CREATE TABLE payments
+(
+    id           BIGSERIAL PRIMARY KEY,
+    order_id     BIGINT      NOT NULL UNIQUE REFERENCES orders (id),
+    amount_cents BIGINT      NOT NULL CHECK (amount_cents >= 0),
+    status       TEXT        NOT NULL CHECK (status IN ('PENDING', 'CAPTURED', 'REFUNDED', 'FAILED')),
+    provider_ref TEXT UNIQUE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Webhook de-duplication: providers deliver at least once.
+CREATE TABLE payment_events
+(
+    provider_event_id TEXT PRIMARY KEY,
+    type              TEXT        NOT NULL,
+    payment_id        BIGINT,
+    received_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Double-entry ledger. Positive = debit, negative = credit. Every transaction (txn_id) must
+-- sum to zero; entries are never updated or deleted, corrections are new transactions.
+CREATE TABLE ledger_entries
+(
+    id           BIGSERIAL PRIMARY KEY,
+    txn_id       UUID        NOT NULL,
+    account      TEXT        NOT NULL,
+    amount_cents BIGINT      NOT NULL CHECK (amount_cents <> 0),
+    order_id     BIGINT REFERENCES orders (id),
+    memo         TEXT        NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_ledger_txn ON ledger_entries (txn_id);
+CREATE INDEX idx_ledger_account ON ledger_entries (account);
+CREATE INDEX idx_ledger_order ON ledger_entries (order_id);
+
+-- Checked at COMMIT (deferred), so a transaction may insert its legs one by one.
+CREATE FUNCTION assert_ledger_txn_balanced() RETURNS trigger LANGUAGE plpgsql AS
+'BEGIN
+    IF (SELECT COALESCE(SUM(amount_cents), 0) FROM ledger_entries WHERE txn_id = NEW.txn_id) <> 0 THEN
+        RAISE EXCEPTION ''ledger transaction % does not balance'', NEW.txn_id USING ERRCODE = ''23514'';
+    END IF;
+    RETURN NULL;
+END';
+
+CREATE CONSTRAINT TRIGGER ledger_txn_balanced
+    AFTER INSERT ON ledger_entries
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION assert_ledger_txn_balanced();
+
+CREATE FUNCTION forbid_ledger_changes() RETURNS trigger LANGUAGE plpgsql AS
+'BEGIN
+    RAISE EXCEPTION ''ledger entries are append-only'' USING ERRCODE = ''42501'';
+END';
+
+CREATE TRIGGER ledger_append_only
+    BEFORE UPDATE OR DELETE ON ledger_entries
+    FOR EACH ROW EXECUTE FUNCTION forbid_ledger_changes();
+
+
+-- ─────────────────────────── Sample data ───────────────────────────
+-- Fictional restaurants; the pictures are illustrations generated from code (doordash-app/public/food).
+
+INSERT INTO restaurants (name, address, image_url, phone)
+VALUES ('Ember & Bun', 'Smash burgers, fries and shakes', '/food/cover-burgers.svg', '(555) 010-0101'),
+       ('Stone Pot Tofu House', 'Korean soft tofu stews and pancakes', '/food/cover-tofu.svg', '(555) 010-0102'),
+       ('Juniper Wok', 'Sichuan classics, wok-fired to order', '/food/cover-wok.svg', '(555) 010-0103');
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id)
-VALUES ('Made with white meat chicken, our Chicken Fries are coated in a light crispy breading seasoned with savory spices and herbs.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=300,format=auto,quality=50/https://cdn.doordash.com/media/photos/f439436f-c5ab-47af-bac4-7b73ab60a24b-retina-large.jpg',
-        'Chicken Fries - 9 Pc', 4.89, 1),
-       ('Our Whopper Sandwich is a 1/4 lb* of savory flame-grilled beef topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=300,format=auto,quality=50/https://cdn.doordash.com/media/photos/f878a689-618b-4c70-a00f-e7b1f320adc9-retina-large.jpg',
-        'Whopper Meal', 10.59, 1),
-       ('Our Impossible™ Whopper Sandwich features a savory flame-grilled patty made from plants topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/5c306a5f-fdd2-41d2-a660-9762aaa8eee8-retina-large.jpg',
-        'Impossible™ Whopper', 7.99, 1),
-       ('Say hello to our HERSHEY’S® Sundae Pie. One part crunchy chocolate crust and one part chocolate crème filling, garnished with a delicious topping and real HERSHEY’S® Chocolate Chips',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/80b1670d-e9c0-4886-a5b7-1ad48edd24ca-retina-large.jpg',
-        'HERSHEYS® Sundae Pie', 3.09, 1),
-       ('Our Whopper Sandwich is a 1/4 lb* of savory flame-grilled beef topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/9b3d7985-e457-43b3-938d-5184f48c2687-retina-large-jpeg',
-        'Whopper', 6.39, 1),
-       ('Our Double Whopper Sandwich is a pairing of two 1/4 lb* savory flame-grilled beef patties topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/45addf4a-e8a8-47cb-a705-cce1d10ce86d-retina-large.jpg',
-        'Double Whopper Meal', 11.69, 1),
-       ('Our Double Whopper Sandwich is a pairing of two 1/4 lb* savory flame-grilled beef patties topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/31dd68c2-06ec-42ad-bcd4-da7bd3425437-retina-large-jpeg',
-        'Spicy Crispy Chicken Sandwich', 6.09, 1),
-       ('Our Original Chicken Sandwich is lightly breaded and topped with a simple combination of shredded lettuce and creamy mayonnaise on a sesame seed bun',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/3e437f54-fa4e-4e9d-bf80-8a1e5b120f32-retina-large-jpeg',
-        'Original Chicken Sandwich', 6.09, 1),
-       ('Our Bacon King Sandwich features two 1/4 lb* savory flame-grilled beef patties, topped a with hearty portion of thick-cut smoked bacon, melted American cheese and topped with ketchup and creamy mayonnaise all on a soft sesame seed bun.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/adb96c32-3c5b-4375-ba92-b30767d2513d-retina-large.jpg',
-        'Bacon King Sandwich Meal', 12.19, 1),
-       ('Cool down with our creamy hand spun OREO® Shake.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/c3ad483f-bad7-44f1-96af-4c3dcfc63c6d-retina-large.jpg',
-        'Classic OREO® Shake', 3.99, 1),
-       ('Tofu boiled with your choice of meat and mushrooms. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/b7055ca9-3caf-4d9d-9c99-04be1e36dbbf-retina-large-jpeg',
-        'Original Soft Tofu', 17.06, 2),
-       ('Tofu boiled with beef, shrimp, and clams. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/37ad1974-1395-4e5c-86ff-fdf120cf8c58-retina-large-jpeg',
-        'Combination Soft Tofu', 17.06, 2),
-       ('Tofu boiled with mussels, shrimp, and clam. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/96bc8289-1950-4b4f-823d-12f33349a5fe-retina-large-jpeg',
-        'Seafood Soft Tofu', 17.06, 2),
-       ('Squid, clam, imitation crab, and grilled onions fried in batter.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/0a94b7e9-903d-49b7-937a-7940c8b56ad5-retina-large-jpeg',
-        'Seafood Pancake', 20.27, 2),
-       ('Tofu boiled with kimchi and your choice of meat. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/0c062cff-1868-40e1-946d-29d3e46f1541-retina-large-jpeg',
-        'Kimchi Soft Tofu', 17.06, 2),
-       ('Beef short ribs served with rice and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/6340c369-2485-4d60-afcf-ca9068448d84-retina-large.jpg',
-        'Beef Short Ribs', 29.36, 2),
-       ('Tofu boiled with dumplings, rice cake, and beef. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/80b1670d-e9c0-4886-a5b7-1ad48edd24ca-retina-large.jpg',
-        'HERSHEYS® Sundae Pie', 3.09, 1),
-       ('Our Whopper Sandwich is a 1/4 lb* of savory flame-grilled beef topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/9b3d7985-e457-43b3-938d-5184f48c2687-retina-large-jpeg',
-        'Whopper', 6.39, 1),
-       ('Our Double Whopper Sandwich is a pairing of two 1/4 lb* savory flame-grilled beef patties topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/45addf4a-e8a8-47cb-a705-cce1d10ce86d-retina-large.jpg',
-        'Double Whopper Meal', 11.69, 1),
-       ('Our Double Whopper Sandwich is a pairing of two 1/4 lb* savory flame-grilled beef patties topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/31dd68c2-06ec-42ad-bcd4-da7bd3425437-retina-large-jpeg',
-        'Spicy Crispy Chicken Sandwich', 6.09, 1),
-       ('Our Original Chicken Sandwich is lightly breaded and topped with a simple combination of shredded lettuce and creamy mayonnaise on a sesame seed bun',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/3e437f54-fa4e-4e9d-bf80-8a1e5b120f32-retina-large-jpeg',
-        'Original Chicken Sandwich', 6.09, 1),
-       ('Our Bacon King Sandwich features two 1/4 lb* savory flame-grilled beef patties, topped a with hearty portion of thick-cut smoked bacon, melted American cheese and topped with ketchup and creamy mayonnaise all on a soft sesame seed bun.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/adb96c32-3c5b-4375-ba92-b30767d2513d-retina-large.jpg',
-        'Bacon King Sandwich Meal', 12.19, 1),
-       ('Cool down with our creamy hand spun OREO® Shake.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/c3ad483f-bad7-44f1-96af-4c3dcfc63c6d-retina-large.jpg',
-        'Classic OREO® Shake', 3.99, 1),
-       ('Tofu boiled with your choice of meat and mushrooms. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/b7055ca9-3caf-4d9d-9c99-04be1e36dbbf-retina-large-jpeg',
-        'Original Soft Tofu', 17.06, 2),
-       ('Tofu boiled with beef, shrimp, and clams. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/37ad1974-1395-4e5c-86ff-fdf120cf8c58-retina-large-jpeg',
-        'Combination Soft Tofu', 17.06, 2),
-       ('Tofu boiled with mussels, shrimp, and clam. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/96bc8289-1950-4b4f-823d-12f33349a5fe-retina-large-jpeg',
-        'Seafood Soft Tofu', 17.06, 2),
-       ('Squid, clam, imitation crab, and grilled onions fried in batter.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/0a94b7e9-903d-49b7-937a-7940c8b56ad5-retina-large-jpeg',
-        'Seafood Pancake', 20.27, 2),
-       ('Tofu boiled with kimchi and your choice of meat. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/0c062cff-1868-40e1-946d-29d3e46f1541-retina-large-jpeg',
-        'Kimchi Soft Tofu', 17.06, 2),
-       ('Beef short ribs served with rice and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/6340c369-2485-4d60-afcf-ca9068448d84-retina-large.jpg',
-        'Beef Short Ribs', 29.36, 2),
-       ('Tofu boiled with dumplings, rice cake, and beef. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/b7055ca9-3caf-4d9d-9c99-04be1e36dbbf-retina-large-jpeg',
-        'Dumpling Soft Tofu', 17.06, 2),
-       ('Tofu boiled with assorted mushrooms. Served with your choice of side and an assortment of kimchi dishes',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/b7055ca9-3caf-4d9d-9c99-04be1e36dbbf-retina-large-jpeg',
-        'Assorted Mushroom Tofu', 17.06, 2),
-       ('Rice, BBQ beef, and vegetables served in stoneware with an assortment of kimchi dishes',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/9844dd4e-3c74-4942-8f90-2b3f4be25049-retina-large-jpeg',
-        'BBQ Beef & Vegetables in Stoneware', 20.27, 2),
-       ('Tofu boiled with ham and cheese. Served with your choice of side and an assortment of kimchi dishes.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/9c6b2a1c-1e2c-4d80-a111-2bebbcadd64c-retina-large.jpg',
-        'Ham & Cheese Soft Tofu', 17.06, 2),
-       ('Medium spicy.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/5b34852e-d253-461c-8be8-1bb0bc5e39be-retina-large.jpg',
-        'Stir Fried Pork with Pepper', 13.99, 3),
-       ('',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/bf70f262-0c55-41e1-89bc-84c061ae485f-retina-large.jpg',
-        'Eggplant with Minced Pork, Garlic, Cilantro', 14.99, 3),
-       ('Mild spicy.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/cb870c77-ace1-49ec-aa2f-9e18de102242-retina-large.jpg',
-        'Stir Fried Cauliflower with Pork', 14.99, 3),
-       ('Mild spicy.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/1acf9c6b-189d-4583-a151-7ef522c283d9-retina-large.jpg',
-        'Poached Fish Fillets in Sour Soup', 17.99, 3),
-       ('Very spicy.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/7f05859d-5e83-476d-a45a-73a3eb8a94e0-retina-large.jpg',
-        'Stir Fried Beef with Pepper', 16.99, 3),
-       ('Medium spicy.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/8b2ca9fc-2c1d-4bf2-96ff-d0bd3c415e8d-retina-large.jpg',
-        'Stir Fried Shredded Tripe with Wugang Tofu', 19.99, 3),
-       ('Very spicy.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/89ad8679-346e-41d8-b98f-3501fff4b277-retina-large.jpg',
-        'Poached Sliced Beef in Hot Chili Oil', 17.99, 3),
-       ('With chopped broccoli, peas, carrots, bok choy, egg.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/ec06c431-9426-4971-a129-920440e1c9ce-retina-large.jpg',
-        'Fried Rice', 9.5, 3),
-       ('Very spicy.',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/2fe1b87f-d41f-4fa4-8cae-5f2ee5bb97e4-retina-large.jpg',
-        'Smashed Green Pepper, Chinese Eggplant & Preserved Egg', 11.99, 3),
-       ('',
-        'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/a307e73d-dd12-4841-be14-6f5825a64c59-retina-large.jpg',
-        'Stir Fried A-Choy with Minced Garlic', 10.99, 3);
+VALUES ('Two smashed beef patties, aged cheddar, pickles and house sauce on a toasted brioche bun.', '/food/burger.svg', 'Double Smash Burger', 12.50, 1),
+       ('Black truffle mayo, gruyère and caramelised onions. Limited batch every day.', '/food/truffle-burger.svg', 'Truffle Smash Burger', 16.00, 1),
+       ('Buttermilk-brined thigh, spicy slaw, pickles.', '/food/chicken-sandwich.svg', 'Hot Chicken Sandwich', 11.25, 1),
+       ('Skin-on fries with sea salt and rosemary.', '/food/fries.svg', 'Rosemary Fries', 4.75, 1),
+       ('Vanilla bean soft serve, malt and a cherry on top.', '/food/shake.svg', 'Vanilla Malt Shake', 6.00, 1),
+       ('Silken tofu, kimchi and pork belly in a bubbling chili broth, with rice.', '/food/tofu-stew.svg', 'Kimchi Soft Tofu Stew', 15.50, 2),
+       ('Shrimp, clams and squid in a mild seafood broth, with rice.', '/food/seafood-stew.svg', 'Seafood Soft Tofu Stew', 17.00, 2),
+       ('Crispy scallion and seafood pancake. Made in small batches.', '/food/pancake.svg', 'Seafood Scallion Pancake', 18.50, 2),
+       ('Soy-glazed short ribs, grilled and sliced, with rice.', '/food/short-ribs.svg', 'Galbi Short Ribs', 27.00, 2),
+       ('Silken tofu, minced pork, fermented bean paste and Sichuan pepper.', '/food/mapo-tofu.svg', 'Mapo Tofu', 14.00, 3),
+       ('Pork and chive dumplings in chili oil and black vinegar.', '/food/dumplings.svg', 'Chili Oil Dumplings', 10.50, 3),
+       ('Hand-pulled noodles, sesame paste, chili oil and crushed peanuts.', '/food/dan-dan.svg', 'Dan Dan Noodles', 13.00, 3),
+       ('Blistered green beans with garlic and preserved vegetables.', '/food/green-beans.svg', 'Dry-Fried Green Beans', 11.00, 3);
 
+-- Limited items: every checkout that includes them competes for these rows.
+INSERT INTO inventory (menu_item_id, available)
+VALUES (2, 12),
+       (8, 8),
+       (10, 20);

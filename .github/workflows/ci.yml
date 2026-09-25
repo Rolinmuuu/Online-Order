@@ -2,40 +2,16 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
-  build:
+  backend:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-          cache: 'gradle'
-      
-      - name: Add auth of Gradle
-        run: chmod +x gradlew
-        working-directory: ./OnlineOrder
-
-      - name: Run tests
-        run: ./gradlew test
-        working-directory: ./OnlineOrder
-
-      - name: Build with Gradle (Construct JAR file)
-        run: ./gradlew build -x test
-        working-directory: ./OnlineOrder
     services:
       db:
-        image: postgres:15.2-alpine
+        image: postgres:16-alpine
         env:
           POSTGRES_DB: onlineorder
           POSTGRES_PASSWORD: secret
@@ -43,20 +19,18 @@ jobs:
           - "5432:5432"
         options: >-
           --health-cmd "pg_isready -U postgres -d onlineorder"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-          --health-start-period 30s
+          --health-retries 10
       redis:
-        image: redis:7.0-alpine
+        image: redis:7-alpine
         ports:
           - "6379:6379"
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-          --health-start-period 30s
+          --health-retries 10
     env:
       DATABASE_URL: localhost
       DATABASE_PORT: 5432
@@ -65,3 +39,44 @@ jobs:
       REDIS_HOST: localhost
       REDIS_PORT: 6379
       INIT_DB: always
+      # integration tests (src/test/java/.../it) get a database of their own: they rebuild the
+      # schema before every test, and must not share one with the Spring context test
+      TEST_DATABASE_URL: jdbc:postgresql://localhost:5432/onlineorder_test
+      TEST_DATABASE_USER: postgres
+      TEST_DATABASE_PASSWORD: secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+      - name: Create the integration-test database
+        run: PGPASSWORD=secret psql -h localhost -U postgres -c 'CREATE DATABASE onlineorder_test'
+      - name: Unit and integration tests (real PostgreSQL)
+        run: chmod +x gradlew && ./gradlew test
+        working-directory: ./OnlineOrder
+      - name: Build the jar
+        run: ./gradlew build -x test
+        working-directory: ./OnlineOrder
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./doordash-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: doordash-app/package-lock.json
+      - run: npm ci
+      - run: npm test -- --watchAll=false
+        env:
+          CI: "true"
+      - run: npm run build
+        env:
+          CI: "true"
+          GENERATE_SOURCEMAP: "false"
