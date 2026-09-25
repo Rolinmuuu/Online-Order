@@ -38,7 +38,6 @@ public class CartService {
         MenuItemEntity menuItem = menuItemRepository.findById(menuItemId).get();
         OrderItemEntity orderItem = orderItemRepository.findByCartIdAndMenuItemId(cart.id(), menuItem.id());
 
-
         Long orderItemId;
         int quantity;
         if (orderItem == null) {
@@ -48,9 +47,23 @@ public class CartService {
             orderItemId = orderItem.id();
             quantity = orderItem.quantity() + 1;
         }
-        OrderItemEntity newOrderItem = new OrderItemEntity(orderItemId, menuItemId, cart.id(), menuItem.price(), quantity);
+
+        OrderItemEntity newOrderItem = new OrderItemEntity(
+            orderItemId, 
+            menuItemId, 
+            cart.id(), 
+            menuItem.price(), 
+            quantity
+        );
         orderItemRepository.save(newOrderItem);
-        cartRepository.updateTotalPrice(cart.id(), cart.totalPrice() + menuItem.price());
+
+        CartEntity updatedCart = new CartEntity(
+            cart.id(), 
+            cart.customerId(), 
+            cart.totalPrice() + menuItem.price(), 
+            cart.version()
+        );
+        cartRepository.save(updatedCart);
     }
 
 
@@ -66,7 +79,13 @@ public class CartService {
     public void clearCart(Long customerId) {
         CartEntity cartEntity = cartRepository.getByCustomerId(customerId);
         orderItemRepository.deleteByCartId(cartEntity.id());
-        cartRepository.updateTotalPrice(cartEntity.id(), 0.0);
+        CartEntity updatedCart = new CartEntity(
+            cartEntity.id(), 
+            cartEntity.customerId(), 
+            0.0, 
+            cartEntity.version()
+        );
+        cartRepository.save(updatedCart);
     }
 
 

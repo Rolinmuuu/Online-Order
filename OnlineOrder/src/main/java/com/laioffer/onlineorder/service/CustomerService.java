@@ -43,7 +43,7 @@ public class CustomerService {
 
 
         CustomerEntity savedCustomer = customerRepository.findByEmail(email);
-        CartEntity cart = new CartEntity(null, savedCustomer.id(), 0.0);
+        CartEntity cart = new CartEntity(null, savedCustomer.id(), 0.0, null);
         cartRepository.save(cart);
     }
     

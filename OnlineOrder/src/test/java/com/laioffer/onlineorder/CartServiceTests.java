@@ -52,7 +52,7 @@ public class CartServiceTests {
         long customerId = 1L;
         long menuItemId = 2L;
         long cartId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, 0.0);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, 0.0, 0L);
         MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 1L, "Name", "", 10.0, "");
 
 
@@ -69,7 +69,7 @@ public class CartServiceTests {
         // Verify the repository method calls
         OrderItemEntity newOrderItem = new OrderItemEntity(null, menuItemId, cartId, 10.0, 1);
         Mockito.verify(orderItemRepository).save(newOrderItem);
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, 10.0);
+        Mockito.verify(cartRepository).save(new CartEntity(cartId, customerId, 10.0, 0L));
     }
 
 
@@ -80,9 +80,9 @@ public class CartServiceTests {
         long menuItemId = 2L;
         long cartId = 3L;
         long orderItemId = 4L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, 10.0);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, 10.0, 0L);
         MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 1L, "Name", "", 10.0, "");
-        OrderItemEntity orderItemEntity = new OrderItemEntity(orderItemId, menuItemId, customerId, 10.0, 1);
+        OrderItemEntity orderItemEntity = new OrderItemEntity(orderItemId, menuItemId, cartId, 10.0, 1);
 
 
         // Mock repository method calls
@@ -98,7 +98,7 @@ public class CartServiceTests {
         // Verify the repository method calls
         OrderItemEntity newOrderItem = new OrderItemEntity(orderItemId, menuItemId, cartId, 10.0, 2);
         Mockito.verify(orderItemRepository).save(newOrderItem);
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, 20.0);
+        Mockito.verify(cartRepository).save(new CartEntity(cartId, customerId, 20.0, 0L));
     }
 
 
@@ -107,7 +107,7 @@ public class CartServiceTests {
         // Mock data
         long customerId = 1L;
         long cartId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, 21.0);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, 21.0, 0L);
         List<OrderItemEntity> orderItems = List.of(
                 new OrderItemEntity(1L, 1L, cartId, 10.0, 1),
                 new OrderItemEntity(2L, 2L, cartId, 10.0, 2)
@@ -141,7 +141,7 @@ public class CartServiceTests {
         // Mock data
         long customerId = 1L;
         long cartId = 2L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, 21.0);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, 21.0, 0L);
 
 
         // Mock repository method calls
@@ -154,6 +154,6 @@ public class CartServiceTests {
 
         // Verify the repository method calls
         Mockito.verify(orderItemRepository).deleteByCartId(cartId);
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, 0.0);
+        Mockito.verify(cartRepository).save(new CartEntity(cartId, customerId, 0.0, 0L));
     }
 }
