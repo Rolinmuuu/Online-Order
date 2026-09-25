@@ -35,3 +35,6 @@ out/
 
 ### VS Code ###
 .vscode/
+
+# Built frontend is packaged by Gradle, never committed
+src/main/resources/public/

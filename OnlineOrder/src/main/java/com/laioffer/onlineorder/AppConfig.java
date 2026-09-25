@@ -92,7 +92,7 @@ public class AppConfig {
                 .authorizeHttpRequests(auth ->
                         auth
                                 .requestMatchers(PathRequest.toStaticResources().atCommonLocations()).permitAll()
-                                .requestMatchers(HttpMethod.GET, "/", "/index.html", "/*.json", "/*.png", "/*.ico", "/*.txt", "/static/**").permitAll()
+                                .requestMatchers(HttpMethod.GET, "/", "/index.html", "/*.json", "/*.png", "/*.ico", "/*.txt", "/assets/**").permitAll()
                                 .requestMatchers(HttpMethod.POST, "/login", "/logout", "/signup").permitAll()
                                 .requestMatchers(HttpMethod.GET, "/restaurants/**", "/restaurant/**", "/inventory", "/food/**").permitAll()
                                 // The payment provider authenticates with an HMAC signature, not a session.

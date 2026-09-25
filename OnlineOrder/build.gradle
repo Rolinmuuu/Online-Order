@@ -42,3 +42,32 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+// ── Frontend ──────────────────────────────────────────────────────────────────────────────
+// The React app (../doordash-app) is built by npm and packaged into the jar under public/,
+// which Spring Boot serves as static content. The built files are not committed.
+//   ./gradlew bootJar -PwithFrontend    runs npm ci + npm run build first
+//   ./gradlew bootJar                   packages ../doordash-app/build if it exists
+//   -PfrontendDist=<dir>                packages an already-built directory (the Docker build)
+def frontendDir = file('../doordash-app')
+def frontendDist = file(findProperty('frontendDist') ?: "${frontendDir}/build")
+
+tasks.register('buildFrontend', Exec) {
+    group = 'build'
+    description = 'Installs and builds the React app with npm.'
+    workingDir frontendDir
+    inputs.dir("${frontendDir}/src")
+    inputs.files("${frontendDir}/package-lock.json", "${frontendDir}/index.html", "${frontendDir}/vite.config.ts")
+    inputs.dir("${frontendDir}/public")
+    outputs.dir("${frontendDir}/build")
+    commandLine 'sh', '-c', 'npm ci --no-audit --no-fund && npm run build'
+}
+
+tasks.named('processResources') {
+    if (project.hasProperty('withFrontend')) {
+        dependsOn 'buildFrontend'
+    }
+    from(frontendDist) {
+        into 'public'
+    }
+}

@@ -72,10 +72,7 @@ jobs:
           cache: npm
           cache-dependency-path: doordash-app/package-lock.json
       - run: npm ci
-      - run: npm test -- --watchAll=false
-        env:
-          CI: "true"
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build
-        env:
-          CI: "true"
-          GENERATE_SOURCEMAP: "false"
