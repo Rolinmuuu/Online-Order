@@ -1,0 +1,8 @@
+**/node_modules
+**/build
+**/.gradle
+**/test-results
+**/playwright-report
+.git
+docs
+*.md

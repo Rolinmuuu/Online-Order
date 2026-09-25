@@ -1,0 +1,89 @@
+# Every alert links to its runbook entry in docs/OPERATIONS.md. Thresholds are starting points
+# for demo traffic; tune them against real baselines.
+groups:
+  - name: online-order-slo
+    rules:
+      - alert: CheckoutLatencyHigh
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{uri="/orders", method="POST"}[5m]))) > 0.3
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "Checkout p99 above 300 ms for 10 minutes"
+          runbook: "docs/OPERATIONS.md#checkout-latency-high"
+
+      - alert: ErrorBudgetBurn
+        # 99.9% availability SLO: a 14.4x burn rate over 1h spends 2% of a 30-day budget.
+        expr: |
+          (
+            sum(rate(http_server_requests_seconds_count{status=~"5.."}[1h]))
+            / sum(rate(http_server_requests_seconds_count[1h]))
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count[5m]))
+          ) > (14.4 * 0.001)
+        labels: { severity: page }
+        annotations:
+          summary: "5xx rate is burning the 99.9% error budget 14x too fast"
+          runbook: "docs/OPERATIONS.md#error-budget-burn"
+
+  - name: online-order-correctness
+    rules:
+      - alert: OutboxBacklogGrowing
+        expr: max(outbox_oldest_pending_age_seconds) > 300
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "Oldest undelivered outbox message is {{ $value | humanizeDuration }} old"
+          runbook: "docs/OPERATIONS.md#outbox-backlog-growing"
+
+      - alert: OutboxMessagesStuck
+        expr: max(outbox_stuck) > 0
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $value }} outbox messages have failed 5+ times (refunds or notifications not delivered)"
+          runbook: "docs/OPERATIONS.md#outbox-messages-stuck"
+
+      - alert: UnpaidOrdersNotExpiring
+        expr: max(orders_overdue_unpaid) > 0
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $value }} unpaid orders are past pay_by: their stock is still held"
+          runbook: "docs/OPERATIONS.md#unpaid-orders-not-expiring"
+
+      - alert: LedgerUnbalanced
+        expr: max(ledger_unbalanced_transactions) > 0
+        labels: { severity: page }
+        annotations:
+          summary: "A ledger transaction does not sum to zero. This should be impossible."
+          runbook: "docs/OPERATIONS.md#ledger-unbalanced"
+
+      - alert: WebhookSignatureFailures
+        expr: sum(rate(payments_webhooks_total{outcome="bad_signature"}[10m])) > 0.05
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Payment webhooks are failing signature checks (secret rotation or forgery attempts)"
+          runbook: "docs/OPERATIONS.md#webhook-signature-failures"
+
+  - name: online-order-capacity
+    rules:
+      - alert: ConnectionPoolSaturated
+        expr: max(hikaricp_connections_pending) > 0
+        for: 5m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Requests are waiting for a database connection"
+          runbook: "docs/OPERATIONS.md#connection-pool-saturated"
+
+      - alert: InstanceDown
+        expr: up{job="online-order"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.instance }}"
+          runbook: "docs/OPERATIONS.md#instance-down"
