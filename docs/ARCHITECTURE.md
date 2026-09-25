@@ -293,6 +293,24 @@ Docker image builds both. The compiled bundle is not committed.
   which caches `/assets/**` at the edge, so this stays cheap until the frontend needs its own
   release cadence.
 
+## ADR 14 — Sessions in PostgreSQL
+
+Form-login sessions used to live in each instance's memory: every deploy signed every customer
+out, and with two instances behind a load balancer a request landing on the other one was
+unauthenticated. Sessions are now stored by Spring Session JDBC, in tables created by
+`V3__http_sessions.sql`.
+
+- **Why the database and not Redis.** Redis is optional here (a menu cache whose outage only
+  costs latency, ADR 10); making it hold sessions would turn it into a dependency whose outage
+  signs everyone out. PostgreSQL is already required and already highly available.
+- **Cost.** One indexed read per authenticated request, plus a write when the session changes
+  or its last-access time is updated. At this service's request rates that is small next to
+  the checkout transaction itself; if it ever shows, sessions move to Redis with the same API.
+- **Expiry.** 8 hours idle (`SESSION_TIMEOUT`). Every instance runs Spring Session's cleanup of
+  expired rows each minute; the `EXPIRY_TIME` index keeps it cheap.
+- **Checked** by `SessionSharingTests`: two real instances on one database, sign in on one, use
+  the session on the other, stop the first, still signed in; logout ends it on both.
+
 ---
 
 ## Fixed along the way
@@ -311,6 +329,7 @@ Docker image builds both. The compiled bundle is not committed.
 | signup with a missing e-mail or a taken one | 500 | 400 `VALIDATION_FAILED` with field messages, 409 `EMAIL_TAKEN` |
 | a declined card updated the payment but sent no live update | the order page waited on "Waiting for the processor" until reloaded | `Orders.announce` notifies; the reason is stored and shown |
 | the menu read stock once per session (found by the Playwright suite) | sold-out and restocked dishes showed stale counts | re-read on every visit and every 15 s |
+| sessions in instance memory | every deploy signed everyone out; a second instance could not serve a signed-in user | sessions in PostgreSQL (ADR 14) |
 
 ## Known gaps
 
@@ -318,8 +337,6 @@ Docker image builds both. The compiled bundle is not committed.
 - The simulated provider decides by test card token (`tok_visa` approves, the decline tokens
   decline). A real integration would take the token from the processor's card form in the
   browser; there is no real `PaymentProvider` yet.
-- Sessions live in each instance's memory. With more than one instance, a request landing on
-  another task is signed out; Spring Session (JDBC or Redis) is the next step (CLOUD.md).
 - Rate limits are per instance and reset on deploy (ADR 11).
 - Refund-through-Spring-events is exercised against the real application context by
   `OnlineOrderApplicationTests` (runs in CI) and was checked by hand over HTTP. The integration

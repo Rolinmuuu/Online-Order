@@ -32,6 +32,8 @@ dependencies {
     implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
     // compile scope: OrderUpdatesHub uses the driver's LISTEN/NOTIFY API (PGConnection)
     implementation 'org.postgresql:postgresql:42.7.7'
+    // sessions in PostgreSQL: survive restarts and deploys, shared by every instance
+    implementation 'org.springframework.session:spring-session-jdbc'
     implementation 'org.flywaydb:flyway-core'
     implementation 'org.flywaydb:flyway-database-postgresql'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

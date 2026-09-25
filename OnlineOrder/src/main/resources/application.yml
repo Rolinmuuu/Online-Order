@@ -4,11 +4,13 @@ server:
   shutdown: graceful
   servlet:
     session:
+      timeout: ${SESSION_TIMEOUT:8h}   # idle time before a customer must sign in again
       cookie:
         # The session cookie is never sent on cross-site requests, so another site cannot make a
         # signed-in browser place, cancel or reject orders (CSRF tokens are off for this JSON API).
         same-site: strict
         http-only: true
+        secure: ${SESSION_COOKIE_SECURE:false}   # true wherever the site is served over HTTPS
 
 app:
   # Demo mode: sample accounts (DevRunner) and the simulated card processor. Turn off anywhere real.
@@ -34,6 +36,9 @@ spring:
     username: ${DATABASE_USERNAME:postgres}
     password: ${DATABASE_PASSWORD:secret}
     driver-class-name: org.postgresql.Driver
+  session:
+    jdbc:
+      initialize-schema: never   # V3__http_sessions.sql creates the tables
   flyway:
     # db/migration is the schema; db/seed is the sample menu (a repeatable migration). A real
     # deployment that manages its own menu sets FLYWAY_LOCATIONS=classpath:db/migration.

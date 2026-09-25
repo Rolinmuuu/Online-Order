@@ -146,7 +146,8 @@ when demo mode is off), or `ExitOnOutOfMemoryError`.
 - **Deploy**: CI builds and tests the image; a rolling deploy starts new tasks, which run
   Flyway migrations, pass readiness, and then receive traffic. Old tasks get SIGTERM, stop
   accepting requests, finish in-flight ones (graceful shutdown, 20 s), close their SSE streams
-  so browsers reconnect to a new task, and exit.
+  so browsers reconnect to a new task, and exit. Sessions are in the database, so nobody is
+  signed out by a deploy.
 - **Roll back** by deploying the previous image. This is safe because every migration is
   expand-only (ARCHITECTURE.md, ADR 9): the previous version runs against the newer schema.
   Flyway never runs "down" migrations; a destructive change is its own later release.
@@ -168,4 +169,6 @@ when demo mode is off), or `ExitOnOutOfMemoryError`.
 | `LOGGING_STRUCTURED_FORMAT_CONSOLE` | unset (`ecs` in the image) | JSON logs |
 | `RATE_LIMIT_ENABLED` | `true` | also `RATE_LIMIT_LOGIN_PER_MINUTE` (10), `…_LOGIN_PER_ACCOUNT_PER_MINUTE` (20), `…_SIGNUP_PER_MINUTE` (5), `…_CHECKOUT_PER_MINUTE` (30) |
 | `SHUTDOWN_GRACE` | `20s` | how long in-flight requests get on SIGTERM |
+| `SESSION_TIMEOUT` | `8h` | idle time before signing in again; sessions are stored in PostgreSQL |
+| `SESSION_COOKIE_SECURE` | `false` | set `true` wherever the site is served over HTTPS |
 | `SPRING_PROFILES_ACTIVE=dev` | | logs SQL and raw requests; never in production |

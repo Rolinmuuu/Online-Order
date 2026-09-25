@@ -34,7 +34,7 @@ flowchart TB
 |---|---|
 | **ECS Fargate behind an ALB** (App Runner is fine at small scale) | SSE streams are long-lived HTTP responses. The 20 s heartbeat keeps them inside the ALB's default idle timeout; deployments drain connections, and clients reconnect and re-fetch. |
 | **No sticky sessions needed for live updates** | every task LISTENs to PostgreSQL, so whichever task holds a browser's stream receives every committed change |
-| **Spring Session in the database** (or Redis) when there are 2+ tasks | form-login sessions must survive a request landing on another task |
+| **Spring Session in the database** (done, ADR 14) | form-login sessions survive a request landing on another task and a deploy |
 | **RDS Multi-AZ** | a synchronous standby. The system of record for money should not lose a committed transaction on an AZ failure; failover is about 60–120 s. |
 | **RDS Proxy for request traffic, direct connection for LISTEN** | the proxy multiplexes pooled connections across tasks, but LISTEN needs a session that stays pinned. `OrderUpdatesHub` already opens its own connection outside the pool; in AWS it would point at the database endpoint instead of the proxy (a second URL, not yet a separate setting). |
 | **Read replica for menus and history** | the first load to move off the primary. Checkout, payment and the kitchen always use the primary (read-your-writes). |

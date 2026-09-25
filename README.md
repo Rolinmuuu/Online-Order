@@ -147,6 +147,7 @@ Observability, rate-limit and shutdown settings are in [docs/OPERATIONS.md](docs
 | Alerts | 9 Prometheus rules including a multi-window error-budget burn, each with a runbook |
 | Logs and traces | JSON logs with trace ids; `X-Trace-Id` on every response; OTLP export |
 | Abuse | token-bucket limits on login (per address and per account), signup and checkout |
+| Sessions | stored in PostgreSQL: a deploy signs nobody out, any instance serves any user |
 | Image | multi-stage, layered, non-root, secure defaults, graceful shutdown |
 | Supply chain | Dependabot, CodeQL, the built frontend is never committed |
 
