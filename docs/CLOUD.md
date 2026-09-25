@@ -53,7 +53,8 @@ flowchart TB
 
 ## Operations
 
-- **Alarms:** p95 latency per route; 5xx rate; `outbox` rows with `attempts > 5` or
+- **Alarms:** the rules in `deploy/prometheus/alerts.yml` (Amazon Managed Prometheus can load
+  them as-is), with runbooks in OPERATIONS.md: p95 latency per route; 5xx rate; `outbox` rows with `attempts > 5` or
   `available_at` far in the past; unpaid orders past `pay_by` that were not swept; any ledger
   transaction whose legs do not sum to zero (should be impossible; checked nightly as a query);
   RDS CPU, connections and replica lag.
@@ -61,9 +62,13 @@ flowchart TB
   then does a rolling ECS deploy with the deployment circuit breaker (automatic rollback).
   Authentication is GitHub OIDC → IAM role, with no long-lived keys.
 - **Settings for a real environment:** `APP_DEMO=false` (no demo accounts, no simulated
-  processor), `PAYMENT_WEBHOOK_SECRET` from Secrets Manager, `INIT_DB=never`.
-- **Schema changes:** today the schema is rebuilt at startup (`INIT_DB=always`), which is fine
-  for a demo and wrong for production. Before any real deployment, move `database-init.sql` to
-  Flyway migrations and set `INIT_DB=never`.
+  processor; the image defaults to it), `PAYMENT_WEBHOOK_SECRET` from Secrets Manager,
+  `FLYWAY_LOCATIONS=classpath:db/migration` (no sample menu), `server.forward-headers-strategy=native`
+  behind the ALB, `MANAGEMENT_OTLP_TRACING_ENDPOINT` for traces.
+- **Health checks:** the ALB target group checks `GET :8081/actuator/health/readiness`; the ALB
+  listener forwards only port 8080, so metrics are reachable from inside the VPC only.
+- **Schema changes:** Flyway migrations run at task start (ARCHITECTURE.md, ADR 9). Every
+  migration must be expand-safe, because a rolling deploy runs the old and new task versions
+  against the same schema.
 - **Cost:** at demo scale the bill is dominated by Multi-AZ RDS; a single-AZ database roughly
   halves it. Estimate with the AWS Pricing Calculator before deploying.

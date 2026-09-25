@@ -8,8 +8,11 @@ kitchen (web) ──▶ payment ──▶ ordering ──▶ inventory
                       │           │
                       └─────┬─────┘
                             ▼
-                         platform   (Tx, outbox + dispatcher, LISTEN/NOTIFY hub, API errors)
+                         platform   (Tx, outbox + dispatcher, LISTEN/NOTIFY hub, API errors,
+                                     metrics, rate limiting, migrations)
 ```
+
+These rules are enforced by `ModuleBoundaryTests` (ADR 12), not just described.
 
 `ordering` never imports `payment`. The kitchen board needs both (orders and the ledger), so its
 controller lives in its own `kitchen` package on top. When an order is cancelled, `ordering` publishes an
@@ -146,8 +149,9 @@ posts the negation. Two database triggers back this up:
 
 So a bug in `Ledger` cannot produce an unbalanced posting or rewrite history. It could still
 post a wrong but balanced amount; the tests check the amounts. The kitchen board's "owed to this
-restaurant" figure is a SUM over the ledger, not a counter that could drift. (`INIT_DB=always`,
-the demo default, rebuilds the whole database at startup; a real deployment runs with `never`.)
+restaurant" figure is a SUM over the ledger, not a counter that could drift. The balance is also
+checked from the outside: `ledger.unbalanced.transactions` re-sums every transaction hourly and
+pages if it is ever non-zero (ADR 10).
 
 ## ADR 7 — PostgreSQL instead of a message broker
 
@@ -188,6 +192,107 @@ cancels those orders, which releases their stock. A partial index
 not to all orders ever placed. An order being paid at that moment is either locked by the
 webhook (skipped, reconsidered next pass) or already PAID (no longer matches).
 
+## ADR 9 — Schema changes are migrations, and every migration is expand-safe
+
+The schema used to be one script that dropped and recreated every table at startup. That made
+every restart a data loss and gave no way to change a live database. Now:
+
+- **Flyway** applies `db/migration/V<n>__*.sql` at startup, before the application touches the
+  database. Files are append-only: a migration that has run anywhere is never edited, a change
+  is a new file. Flyway records a checksum per file and refuses to start if one changed.
+- **Sample data is separate.** `db/seed/R__sample_menu.sql` is a repeatable migration, loaded
+  only where `FLYWAY_LOCATIONS` includes it (the default, for demos). It uses fixed ids with
+  `ON CONFLICT`, never restocks a dish that has been selling, and moves the sequences past its
+  ids, so it is safe to run on a database that already has orders.
+- **A fresh demo is opt-in and guarded.** `DB_RESET_ON_START=true` cleans and re-migrates; it
+  refuses to run unless demo mode is on too, so a misconfigured production task cannot wipe the
+  database.
+- **Existing databases** created by the old script are adopted as version 1 (`baseline-on-migrate`).
+
+**Expand, then contract.** During a rolling deploy the old and new versions run side by side
+against the same schema, so each migration must work with both:
+
+1. *Expand*: add nullable columns, new tables, new indexes (`CREATE INDEX CONCURRENTLY` in its
+   own non-transactional migration on a large table). Deploy code that writes both shapes.
+2. *Migrate*: backfill in batches from a job, not inside the migration (a long migration holds
+   locks and delays startup past the health check).
+3. *Contract*: once no running version reads the old shape, drop it in a later release.
+
+`V2__payment_failure_reason.sql` is an expand step: one nullable column, which the previous
+release simply ignores. A rename would be three releases: add the new column, write both and
+backfill, then drop the old one. `MigrationsIT` checks that migrating an up-to-date database is
+a no-op and that the seed can be re-applied.
+
+## ADR 10 — Observability: count what committed, watch what fails quietly
+
+The dangerous failures here are silent: nothing throws when the outbox stops draining or the
+sweeper stops releasing stock. So the metrics are chosen for those, not only for traffic.
+
+- **Counters agree with the database.** `orders.transitions`, `payments.webhooks`,
+  `payments.declined` are incremented through `BusinessMetrics.countOnCommit`, which defers the
+  increment to after COMMIT and drops it on rollback. A checkout that fails on stock counts
+  nothing; `MetricsIT` checks it. Counting in the service method would over-count every
+  rolled-back attempt, and the flash-sale case (ADR 3) is mostly rolled-back attempts.
+- **Gauges for silent failures come from the database**, not from in-memory state: oldest
+  undelivered outbox message, messages that failed 5+ times, unpaid orders past `pay_by`,
+  unbalanced ledger transactions. They describe the whole system, so every instance reports the
+  same value (dashboards use `max`). They refresh on a schedule so a scrape never waits on a
+  query; the ledger scan runs hourly.
+- **Business error codes.** `api.errors{code}` separates `OUT_OF_STOCK` from `PRICE_CHANGED`
+  and `STATUS_CHANGED`, which `http.server.requests` lumps together as 409.
+- **Traces and logs join up.** Micrometer Tracing puts the trace id on every log line (JSON in
+  containers) and on the response as `X-Trace-Id`, including 401s, so a support request with
+  that header leads to the exact request. Traces are exported over OTLP when an endpoint is set.
+- **The management port is private.** Actuator runs on 8081, which only the orchestrator and
+  Prometheus can reach. Health is open; metrics are denied if anyone moves them to the public
+  port (`ActuatorExposureTests`).
+- **Redis is not in readiness.** It only caches menus; its outage should raise latency, not take
+  every instance out of the load balancer at once.
+
+Alerts and what to do about each are in [OPERATIONS.md](OPERATIONS.md).
+
+## ADR 11 — Rate limiting in the application, per instance
+
+`/login` (per address and per account), `/signup` and checkout are limited by token buckets in
+a servlet filter that runs before Spring Security, so a rejected login costs no password hash.
+
+- **Why in-process.** No new dependency and no network hop on the login path. The limits exist
+  to stop guessing and scripted abuse, where "roughly 10 per minute" is as good as exactly 10.
+- **Cost.** With N instances a client can get N times the limit, and buckets reset on deploy.
+  A shared limit would move the buckets to Redis (a Lua script per request). At the edge, the
+  AWS design adds WAF rate rules in front (CLOUD.md), which stops floods before they reach Java.
+- **Per-account on login** means a botnet spread over many addresses still cannot try thousands
+  of passwords on one account. The trade-off is that an attacker can lock a known account out
+  of password login for a minute; accepted, since it recovers on its own.
+- **Behind a load balancer** the client address must come from `X-Forwarded-For` as rewritten
+  by the balancer (`server.forward-headers-strategy=native`); trusting a client-supplied header
+  would let anyone pick their own bucket.
+
+## ADR 12 — Module boundaries are tests
+
+A modular monolith only stays modular if the first convenient import fails the build.
+`ModuleBoundaryTests` (ArchUnit) checks the graph above: no cycles between modules, `platform`
+depends on no business module, `ordering` never imports `payment` or `kitchen`, nothing imports
+`kitchen`, the catalog code does not reach into ordering, and the catalog's controller → service
+→ repository layering. Planting an `ordering → payment` import makes two rules fail. This is
+also what would make splitting a module into its own service possible later: its dependencies
+are already explicit.
+
+## ADR 13 — One artifact: the jar serves the frontend
+
+The React app (Vite, TypeScript) is built by npm and packaged into the jar by Gradle; the
+Docker image builds both. The compiled bundle is not committed.
+
+- **Why one artifact.** Frontend and API deploy together, so an API change and the screen that
+  uses it can never be half-deployed; same origin, so the `SameSite=Strict` session cookie
+  works with no CORS configuration.
+- **Caching.** Vite puts a content hash in every asset name, so `/assets/**` is served with a
+  one-year immutable cache and `index.html` with `no-cache`: a deploy reaches every browser on
+  its next page load, and unchanged assets are never downloaded twice.
+- **Cost.** Static files are served by Tomcat threads. The AWS design puts CloudFront in front,
+  which caches `/assets/**` at the edge, so this stays cheap until the frontend needs its own
+  release cadence.
+
 ---
 
 ## Fixed along the way
@@ -200,12 +305,22 @@ webhook (skipped, reconsidered next pass) or already PAID (no longer matches).
 | authorities query selected a non-existent column (`authorities`) | PostgreSQL returned the whole row as the "authority" | `SELECT email, authority …` |
 | money as `double` | rounding drift | new tables store integer cents |
 | sample data used real brand names and DoorDash CDN photos | not appropriate for a public demo | fictional restaurants, illustrations generated from code |
+| schema dropped and recreated at every start | a restart deleted all data | Flyway migrations (ADR 9) |
+| `Http11InputBuffer` logged at TRACE by default | raw requests, including session cookies and login passwords, in the logs | only in the `dev` profile |
+| `JdbcUserDetailsManager.userExists` used its default `users` table | any existence check failed with a SQL error | mapped to `customers` |
+| signup with a missing e-mail or a taken one | 500 | 400 `VALIDATION_FAILED` with field messages, 409 `EMAIL_TAKEN` |
+| a declined card updated the payment but sent no live update | the order page waited on "Waiting for the processor" until reloaded | `Orders.announce` notifies; the reason is stored and shown |
+| the menu read stock once per session (found by the Playwright suite) | sold-out and restocked dishes showed stale counts | re-read on every visit and every 15 s |
 
 ## Known gaps
 
 - Kitchen staff are assigned in the `restaurant_staff` table. There is no admin screen for it.
-- The simulated provider always succeeds. Payment failure, retry and wrong-amount handling are
-  covered by integration tests only.
+- The simulated provider decides by test card token (`tok_visa` approves, the decline tokens
+  decline). A real integration would take the token from the processor's card form in the
+  browser; there is no real `PaymentProvider` yet.
+- Sessions live in each instance's memory. With more than one instance, a request landing on
+  another task is signed out; Spring Session (JDBC or Redis) is the next step (CLOUD.md).
+- Rate limits are per instance and reset on deploy (ADR 11).
 - Refund-through-Spring-events is exercised against the real application context by
   `OnlineOrderApplicationTests` (runs in CI) and was checked by hand over HTTP. The integration
   tests wire the services by hand.

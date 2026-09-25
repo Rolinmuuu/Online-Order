@@ -1,12 +1,12 @@
 # Online Order
 
-A food-ordering platform built as a **modular monolith on PostgreSQL**: Spring Boot 3 (Java 21), React 18. The emphasis is on the parts of an ordering system that must stay correct when many people act at once. Limited dishes are never oversold, a retried checkout never creates a second order, a duplicated payment webhook never charges twice, and every cent moves through a double-entry ledger.
+A food-ordering platform built as a **modular monolith on PostgreSQL**: Spring Boot 3 (Java 21), React 18 + TypeScript. The emphasis is on the parts of an ordering system that must stay correct when many people act at once. Limited dishes are never oversold, a retried checkout never creates a second order, a duplicated payment webhook never charges twice, and every cent moves through a double-entry ledger.
 
 ![Menu with limited daily dishes and the cart](docs/menu.png)
 
-| Order tracking, updated live | Kitchen board, updated live |
-|---|---|
-| ![Order page](docs/order-live.png) | ![Kitchen board](docs/kitchen.png) |
+| Order tracking, updated live | Kitchen board, updated live | A declined card, explained |
+|---|---|---|
+| ![Order page](docs/order-live.png) | ![Kitchen board](docs/kitchen.png) | ![Declined payment](docs/order-declined.png) |
 
 Screenshots of the real application running locally against PostgreSQL. The sample data (3 fictional restaurants, orders placed by a seeding script) and the food illustrations, which are generated from code in `doordash-app/scripts/food-art.py`, are not real customers or brands. Payments go through a built-in **simulated** card processor.
 
@@ -50,7 +50,7 @@ The same problems as [SocialAI](https://github.com/Rolinmuuu/Social-AI-Backend) 
 | Idempotency | Redis `SET NX` | a unique key claimed inside the business transaction |
 | Hard part | read fan-out, hot documents | write contention: stock, payments, state races |
 
-Why this project does not use microservices, and the other decisions, are in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, written as decision records. Measured throughput and the bottleneck analysis are in **[docs/SCALING.md](docs/SCALING.md)**. The AWS target design is in **[docs/CLOUD.md](docs/CLOUD.md)** (a design only, not deployed).
+Why this project does not use microservices, and the other decisions, are in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, written as decision records. Measured throughput and the bottleneck analysis are in **[docs/SCALING.md](docs/SCALING.md)**. SLOs, alerts and the runbook for each are in **[docs/OPERATIONS.md](docs/OPERATIONS.md)**. The AWS target design is in **[docs/CLOUD.md](docs/CLOUD.md)** (a design only, not deployed).
 
 ## Guarantees and the test behind each
 
@@ -70,39 +70,52 @@ All of these are integration tests against a real PostgreSQL (`OnlineOrder/src/t
 | Money always balances | double-entry ledger; a deferred constraint trigger rejects an unbalanced transaction at COMMIT; entries are append-only | `LedgerAndOutboxIT` |
 | Unpaid orders release stock exactly once | sweeper claims rows with `FOR UPDATE SKIP LOCKED` | two sweepers in parallel → each order cancelled once |
 | Side effects happen iff the transaction commits | transactional outbox; claim with a lease, deliver outside the claim; external calls outside any transaction | 3 parallel dispatchers, 300 messages → 300 deliveries; a failing handler is retried later |
+| A declined card leaves the order payable, and the customer sees why at once | `payment.failed` stores the reason and NOTIFYs although the status is unchanged; a retry is a new charge | `OrderLifecycleIT`, and end to end in Playwright |
+| Metrics agree with the database | counters inside a transaction increment after COMMIT, never on rollback | `MetricsIT` |
+| The module map holds | ArchUnit rules: no cycles, `ordering` never imports `payment`, `platform` imports no module | `ModuleBoundaryTests` |
+| A restart keeps the data; migrations are re-runnable | Flyway, sample menu as an idempotent repeatable migration, reset refused outside demo mode | `MigrationsIT` |
 
 ## Run it
 
+The whole system, with the monitoring it would have in production:
+
 ```bash
-cd OnlineOrder
-docker compose up -d                 # PostgreSQL 15 + Redis (CI and the benchmarks use 16)
-./gradlew bootRun                    # http://localhost:8080 (serves the built frontend too)
+docker compose up --build            # app http://localhost:8080 · Grafana http://localhost:3001 · Prometheus :9090
 ```
 
-Sign in as `foo@mail.com` (customer) or `kitchen@mail.com` (kitchen staff of all three restaurants), password `123456`. Use two browser windows to watch the kitchen and the customer update each other live. `CACHE_TYPE=simple ./gradlew bootRun` runs without Redis: PostgreSQL is the only required dependency.
+Or for backend development, with the app on the host:
 
-Frontend development server: `cd doordash-app && npm ci && npm start` (port 3000, proxies to 8080).
+```bash
+cd OnlineOrder
+docker compose up -d                 # PostgreSQL + Redis
+./gradlew bootRun -PwithFrontend     # http://localhost:8080 (builds and serves the frontend too)
+```
+
+Sign in as `foo@mail.com` (customer) or `kitchen@mail.com` (kitchen staff of all three restaurants), password `123456`. Use two browser windows to watch the kitchen and the customer update each other live. At checkout, pick a test card: `···4242` is approved, `···0002` and `···9995` are declined. `CACHE_TYPE=simple` runs without Redis: PostgreSQL is the only required dependency. `DB_RESET_ON_START=true` starts from a fresh database (demo mode only).
+
+Frontend development server: `cd doordash-app && npm ci && npm run dev` (Vite on port 3000, proxies the API to 8080).
 
 ## Test
 
 ```bash
-cd OnlineOrder && ./gradlew test     # unit tests + integration tests; needs the PostgreSQL from docker compose
-cd doordash-app && CI=true npm test
+cd OnlineOrder && ./gradlew test         # unit, integration (real PostgreSQL), web and architecture tests
+cd doordash-app && npm run lint && npm run typecheck && npm test
+cd doordash-app && npm run e2e           # Playwright, against a running app (see playwright.config.ts)
 ```
 
-The integration tests connect with `TEST_DATABASE_URL` (default `jdbc:postgresql://localhost:5432/onlineorder_test`, a database of its own: create it once with `createdb -h localhost -U postgres onlineorder_test`), `TEST_DATABASE_USER` and `TEST_DATABASE_PASSWORD`, and rebuild the schema before each test. CI runs both suites on every push (`.github/workflows/ci.yml`).
+The integration tests connect with `TEST_DATABASE_URL` (default `jdbc:postgresql://localhost:5432/onlineorder_test`, a database of its own: create it once with `createdb -h localhost -U postgres onlineorder_test`), `TEST_DATABASE_USER` and `TEST_DATABASE_PASSWORD`, and rebuild the schema with Flyway before each test. CI (`.github/workflows/ci.yml`) runs every suite on every push, builds the production image, runs the end-to-end tests against the real jar, and validates the alert rules; CodeQL and Dependabot run alongside.
 
 ## API
 
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| `POST` | `/signup`, `/login`, `/logout` | public | form login, session cookie |
+| `POST` | `/signup`, `/login`, `/logout` | public | form login, session cookie; signup 400 `VALIDATION_FAILED` / 409 `EMAIL_TAKEN`; 429 `RATE_LIMITED` with `Retry-After` |
 | `GET` | `/me` | signed in | current user, whether they are kitchen staff |
 | `GET` | `/restaurants/menu`, `/inventory` | public | menus (cached), units left of limited dishes |
 | `GET` `POST` | `/cart`, `/cart/clear` | customer | add to cart retries on optimistic-lock conflicts (`/cart/checkout` is an old alias of `/cart/clear`) |
 | `POST` | `/orders` | customer | checkout; header `Idempotency-Key`, body `{"expected_total_cents": …}`; 409 `OUT_OF_STOCK` / `PRICE_CHANGED` / `MIXED_RESTAURANTS` |
 | `GET` | `/orders`, `/orders/{id}` | customer | with lines and the audit trail |
-| `POST` | `/orders/{id}/pay`, `/orders/{id}/cancel` | customer | pay (simulated processor); cancel until the kitchen accepts, refunded if paid |
+| `POST` | `/orders/{id}/pay`, `/orders/{id}/cancel` | customer | pay: body `{"payment_method": "tok_visa"}` (a processor token; the simulator's decline tokens decline); cancel until the kitchen accepts, refunded if paid |
 | `GET` | `/orders/stream` | customer | Server-Sent Events for the customer's orders |
 | `GET` | `/kitchen/restaurants/{id}/orders`, `…/stream` | staff | board + amount owed from the ledger; live stream |
 | `POST` | `/kitchen/orders/{id}/{accept\|ready\|complete\|reject}` | staff | 409 if the order moved meanwhile |
@@ -113,17 +126,33 @@ The integration tests connect with `TEST_DATABASE_URL` (default `jdbc:postgresql
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL`, `DATABASE_PORT`, `DATABASE_USERNAME`, `DATABASE_PASSWORD` | `localhost`, `5432`, `postgres`, `secret` | PostgreSQL |
-| `INIT_DB` | `always` | `always` rebuilds the schema and sample data at startup; `never` keeps data |
+| `APP_DEMO` | `true` (`false` in the Docker image) | demo accounts and the simulated card processor; set `false` anywhere real |
+| `PAYMENT_WEBHOOK_SECRET` | development value | shared secret for webhook signatures; required when `APP_DEMO=false` |
+| `DB_RESET_ON_START` | `false` | drop everything and migrate from scratch; refused unless demo mode |
 | `CACHE_TYPE` | `redis` | `simple` for an in-memory menu cache (no Redis) |
 | `REDIS_HOST`, `REDIS_PORT` | `localhost`, `6379` | |
 | `ORDER_PAY_WITHIN_SECONDS` | `900` | unpaid orders are cancelled after this |
-| `PAYMENT_WEBHOOK_SECRET` | development value | shared secret for webhook signatures; required when `APP_DEMO=false` |
-| `APP_DEMO` | `true` | demo accounts and the simulated card processor; set `false` anywhere real |
-| `BACKGROUND_JOBS` | `true` | outbox dispatcher, expiry sweeper, live-update listener |
+| `BACKGROUND_JOBS` | `true` | outbox dispatcher, expiry sweeper, gauges, live-update listener |
+| `MANAGEMENT_PORT` | `8081` | health and Prometheus metrics, kept off the public port |
+
+Observability, rate-limit and shutdown settings are in [docs/OPERATIONS.md](docs/OPERATIONS.md#configuration-reference).
+
+## Production readiness
+
+| | |
+|---|---|
+| Schema | Flyway migrations, expand-safe so a rolling deploy and a rollback both work (ADR 9) |
+| Health | liveness and readiness probes on an internal port; Redis deliberately excluded |
+| Metrics | business counters that only count committed work, gauges for silent failures (stuck outbox, unswept orders, unbalanced ledger), per-route latency histograms |
+| Alerts | 9 Prometheus rules including a multi-window error-budget burn, each with a runbook |
+| Logs and traces | JSON logs with trace ids; `X-Trace-Id` on every response; OTLP export |
+| Abuse | token-bucket limits on login (per address and per account), signup and checkout |
+| Image | multi-stage, layered, non-root, secure defaults, graceful shutdown |
+| Supply chain | Dependabot, CodeQL, the built frontend is never committed |
 
 ## History
 
-This started as a course-style DoorDash clone (menus, cart, Redis-cached menus, `@Version` on the cart), deployed once on AWS App Runner + RDS; that deployment has been shut down. The ordering, inventory, payment and platform modules, the integration tests and the new interface came later.
+This started as a course-style DoorDash clone (menus, cart, Redis-cached menus, `@Version` on the cart), deployed once on AWS App Runner + RDS; that deployment has been shut down. The ordering, inventory, payment and platform modules, the integration tests and the new interface came later, followed by the production work: migrations, observability, rate limiting, the TypeScript frontend, end-to-end tests and the delivery pipeline.
 
 ## License
 
