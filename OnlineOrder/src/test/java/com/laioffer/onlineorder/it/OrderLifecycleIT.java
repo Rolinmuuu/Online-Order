@@ -183,12 +183,15 @@ class OrderLifecycleIT extends PostgresTestSupport {
         long id = checkout.checkout(c, null, null).id();
         PaymentService.PaymentView first = payments.startPayment(id, c);
         String failed = "{\"id\":\"evt_fail\",\"type\":\"payment.failed\",\"payment_ref\":\"" + first.paymentRef()
-                + "\",\"amount_cents\":1250}";
+                + "\",\"amount_cents\":1250,\"failure_reason\":\"insufficient_funds\"}";
         assertEquals("processed", payments.handleWebhook(failed, signature.sign(failed)));
         assertEquals("FAILED", orders.view(id).paymentStatus());
+        assertEquals("insufficient_funds", orders.view(id).paymentFailureReason(), "the customer is told why");
+        assertEquals(OrderStatus.PLACED, orders.find(id).status(), "still payable with another card");
 
         PaymentService.PaymentView retry = payments.startPayment(id, c);
         assertEquals("PENDING", retry.status());
+        assertEquals(null, orders.view(id).paymentFailureReason(), "a new attempt clears the old reason");
         assertTrue(!retry.paymentRef().equals(first.paymentRef()), "a retry is a new charge with a new reference");
         assertEquals(List.of(first.paymentRef(), retry.paymentRef()), provider.charges);
         assertEquals("processed", payments.handleWebhook(succeeded(retry), signature.sign(succeeded(retry))));
@@ -233,5 +236,27 @@ class OrderLifecycleIT extends PostgresTestSupport {
         long other = customer("other@test");
         assertEquals(404, assertThrows(ApiException.class, () -> orderService.get(id, other)).status().value());
         assertTrue(orders.find(id).status() == OrderStatus.PLACED);
+    }
+
+    /** A declined card changes no order status, but the waiting order page must still hear about it. */
+    @Test
+    void aDeclinedPaymentIsAnnouncedToLiveScreens() throws Exception {
+        long c = customer("declined@test");
+        addToCart(c, 1, 1);
+        long id = checkout.checkout(c, null, null).id();
+        PaymentService.PaymentView p = payments.startPayment(id, c, "tok_chargeDeclined");
+        try (java.sql.Connection listen = dataSource.getConnection()) {
+            listen.setAutoCommit(true);
+            try (java.sql.Statement st = listen.createStatement()) {
+                st.execute("LISTEN order_updates");
+            }
+            String failed = "{\"id\":\"evt_decl\",\"type\":\"payment.failed\",\"payment_ref\":\"" + p.paymentRef()
+                    + "\",\"amount_cents\":1250,\"failure_reason\":\"card_declined\"}";
+            payments.handleWebhook(failed, signature.sign(failed));
+
+            org.postgresql.PGNotification[] n = listen.unwrap(org.postgresql.PGConnection.class).getNotifications(2000);
+            assertEquals(1, n.length);
+            assertTrue(n[0].getParameter().contains("\"orderId\":" + id), n[0].getParameter());
+        }
     }
 }

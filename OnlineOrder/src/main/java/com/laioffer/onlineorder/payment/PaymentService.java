@@ -59,8 +59,16 @@ public class PaymentService {
         this.json = json;
     }
 
-    /** Creates (or re-uses) the order's payment and asks the provider to charge it. */
     public PaymentView startPayment(long orderId, long customerId) {
+        return startPayment(orderId, customerId, PaymentProvider.DEFAULT_PAYMENT_METHOD);
+    }
+
+    /** Creates (or re-uses) the order's payment and asks the provider to charge it. */
+    public PaymentView startPayment(long orderId, long customerId, String paymentMethod) {
+        String method = paymentMethod == null || paymentMethod.isBlank() ? PaymentProvider.DEFAULT_PAYMENT_METHOD : paymentMethod;
+        if (method.length() > 64) {
+            throw ApiException.badRequest("BAD_PAYMENT_METHOD", "payment method token is too long");
+        }
         PaymentView p = tx.run(() -> {
             Orders.Order o = orders.lock(orderId);
             if (o.customerId() != customerId) {
@@ -76,7 +84,7 @@ public class PaymentService {
                     INSERT INTO payments (order_id, amount_cents, status, provider_ref)
                     VALUES (?, ?, 'PENDING', ?)
                     ON CONFLICT (order_id) DO UPDATE
-                    SET status = 'PENDING', provider_ref = EXCLUDED.provider_ref, updated_at = now()
+                    SET status = 'PENDING', provider_ref = EXCLUDED.provider_ref, failure_reason = NULL, updated_at = now()
                     WHERE payments.status = 'FAILED'
                     """, orderId, o.totalCents(), "pay_" + UUID.randomUUID());
             return jdbc.queryForObject(
@@ -85,7 +93,7 @@ public class PaymentService {
                     orderId);
         });
         if ("PENDING".equals(p.status())) {
-            provider.charge(p.paymentRef(), p.amountCents()); // after commit, never inside the transaction
+            provider.charge(p.paymentRef(), p.amountCents(), method); // after commit, never inside the transaction
         }
         return p;
     }
@@ -170,7 +178,12 @@ public class PaymentService {
                     return "refunded";
                 }
                 case "payment.failed" -> {
-                    jdbc.update("UPDATE payments SET status = 'FAILED', updated_at = now() WHERE id = ?", paymentId);
+                    // The order stays PLACED: the customer may try another card until pay_by.
+                    String reason = e.path("failure_reason").asText("card_declined");
+                    jdbc.update("UPDATE payments SET status = 'FAILED', failure_reason = ?, updated_at = now() WHERE id = ?",
+                            reason.length() > 64 ? reason.substring(0, 64) : reason, paymentId);
+                    orders.announce(orders.find(orderId)); // the waiting order page shows the decline at once
+                    BusinessMetrics.countOnCommit("payments.declined", "reason", reason.length() > 64 ? "other" : reason);
                     return "processed";
                 }
                 default -> {

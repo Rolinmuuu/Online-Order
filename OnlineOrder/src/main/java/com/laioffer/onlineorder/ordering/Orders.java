@@ -142,6 +142,14 @@ public class Orders {
         };
     }
 
+    /**
+     * Tells live screens to re-read the order although its status did not change (e.g. a declined
+     * card on a still-unpaid order). Call inside the transaction that made the change.
+     */
+    public void announce(Order o) {
+        updates.publish(new OrderUpdates.Update(o.id(), o.customerId(), o.restaurantId(), o.status().name()));
+    }
+
     public List<InventoryService.Item> itemsOf(long orderId) {
         return jdbc.query("SELECT menu_item_id, name, quantity FROM order_lines WHERE order_id = ?",
                 (rs, i) -> new InventoryService.Item(rs.getLong(1), rs.getString(2), rs.getInt(3)), orderId);
@@ -150,7 +158,8 @@ public class Orders {
     public OrderView view(long orderId) {
         Map<String, Object> row = jdbc.queryForMap("""
                 SELECT o.id, o.customer_id, o.restaurant_id, r.name AS restaurant_name, o.status, o.total_cents,
-                       o.pay_by, o.created_at, o.cancel_reason, p.status AS payment_status
+                       o.pay_by, o.created_at, o.cancel_reason, p.status AS payment_status,
+                       p.failure_reason AS payment_failure_reason
                 FROM orders o
                 JOIN restaurants r ON r.id = o.restaurant_id
                 LEFT JOIN payments p ON p.order_id = o.id
@@ -176,6 +185,7 @@ public class Orders {
                 instant((Timestamp) row.get("created_at")),
                 (String) row.get("cancel_reason"),
                 (String) row.get("payment_status"),
+                (String) row.get("payment_failure_reason"),
                 lines, events);
     }
 

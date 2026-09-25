@@ -77,7 +77,7 @@ abstract class PostgresTestSupport {
         final AtomicInteger refundCalls = new AtomicInteger();
 
         @Override
-        public void charge(String paymentRef, long amountCents) {
+        public void charge(String paymentRef, long amountCents, String paymentMethod) {
             charges.add(paymentRef);
         }
 

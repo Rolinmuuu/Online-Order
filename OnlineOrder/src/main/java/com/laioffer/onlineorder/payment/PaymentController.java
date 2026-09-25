@@ -22,9 +22,15 @@ public class PaymentController {
         this.customers = customers;
     }
 
+    /** Body of POST /orders/{id}/pay: the processor's token for the card (optional). */
+    public record PayBody(String paymentMethod) {
+    }
+
     @PostMapping("/orders/{id}/pay")
-    public PaymentService.PaymentView pay(@AuthenticationPrincipal User user, @PathVariable("id") long orderId) {
-        return payments.startPayment(orderId, customers.getCustomerByEmail(user.getUsername()).id());
+    public PaymentService.PaymentView pay(@AuthenticationPrincipal User user, @PathVariable("id") long orderId,
+                                          @RequestBody(required = false) PayBody body) {
+        return payments.startPayment(orderId, customers.getCustomerByEmail(user.getUsername()).id(),
+                body == null ? null : body.paymentMethod());
     }
 
     /** Called by the payment provider; authenticated by the HMAC signature, not by a session. */

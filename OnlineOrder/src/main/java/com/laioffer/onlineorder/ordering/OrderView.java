@@ -14,6 +14,7 @@ public record OrderView(
         Instant createdAt,
         String cancelReason,
         String paymentStatus,
+        String paymentFailureReason,
         List<Line> lines,
         List<Event> events
 ) {

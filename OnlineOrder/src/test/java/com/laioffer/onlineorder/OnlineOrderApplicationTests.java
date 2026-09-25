@@ -59,4 +59,26 @@ class OnlineOrderApplicationTests {
         assertEquals(OrderStatus.CANCELLED, rejected.status());
         assertEquals("REFUNDED", rejected.paymentStatus());
     }
+
+    /** The simulated processor (demo mode) declines by test card token, like a real one in test mode. */
+    @Test
+    void theSimulatedProcessorDeclinesTheDeclineTestCard() throws Exception {
+        long customer = jdbc.queryForObject(
+                "INSERT INTO customers (email, password, enabled) VALUES ('decline@test', 'x', true) RETURNING id", Long.class);
+        jdbc.update("INSERT INTO carts (customer_id, total_price) VALUES (?, 0)", customer);
+        jdbc.update("INSERT INTO order_items (menu_item_id, cart_id, price, quantity) SELECT 1, id, 12.50, 1 FROM carts WHERE customer_id = ?", customer);
+        long orderId = checkout.checkout(customer, "decline-key", 1250L).id();
+
+        payments.startPayment(orderId, customer, "tok_chargeDeclinedInsufficientFunds");
+
+        long deadline = System.currentTimeMillis() + 10_000;
+        OrderView v = orders.get(orderId, customer);
+        while (!"FAILED".equals(v.paymentStatus()) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+            v = orders.get(orderId, customer);
+        }
+        assertEquals("FAILED", v.paymentStatus());
+        assertEquals("insufficient_funds", v.paymentFailureReason());
+        assertEquals(OrderStatus.PLACED, v.status());
+    }
 }

@@ -29,6 +29,11 @@ import java.util.concurrent.TimeUnit;
  * of a charge arrives asynchronously as a signed webhook, and each event is delivered
  * <b>twice</b> (at-least-once delivery), so the webhook handler's de-duplication is exercised on
  * every payment, not only in tests.
+ *
+ * <p>Like a real processor in test mode, the outcome follows the test card's token:
+ * {@code tok_visa} is approved, {@code tok_chargeDeclined} and
+ * {@code tok_chargeDeclinedInsufficientFunds} are declined, any other token is rejected as
+ * invalid.
  */
 @Component
 @ConditionalOnProperty(name = "app.demo", havingValue = "true", matchIfMissing = true)
@@ -60,16 +65,25 @@ public class SimulatedPaymentProvider implements PaymentProvider {
         this.delayMs = delayMs;
     }
 
+    static final Map<String, String> DECLINES = Map.of(
+            "tok_chargeDeclined", "card_declined",
+            "tok_chargeDeclinedInsufficientFunds", "insufficient_funds");
+
     @Override
-    public void charge(String paymentRef, long amountCents) {
+    public void charge(String paymentRef, long amountCents, String paymentMethod) {
         if (!charged.add(paymentRef)) {
             return; // already charging this payment
         }
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("id", "evt_" + UUID.randomUUID());
-        event.put("type", "payment.succeeded");
         event.put("payment_ref", paymentRef);
         event.put("amount_cents", amountCents);
+        if (PaymentProvider.DEFAULT_PAYMENT_METHOD.equals(paymentMethod)) {
+            event.put("type", "payment.succeeded");
+        } else {
+            event.put("type", "payment.failed");
+            event.put("failure_reason", DECLINES.getOrDefault(paymentMethod, "invalid_payment_method"));
+        }
         String body;
         try {
             body = json.writeValueAsString(event);
