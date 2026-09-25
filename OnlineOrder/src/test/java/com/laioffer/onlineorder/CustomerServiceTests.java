@@ -2,6 +2,7 @@ package com.laioffer.onlineorder;
 
 import com.laioffer.onlineorder.entity.CartEntity;
 import com.laioffer.onlineorder.entity.CustomerEntity;
+import com.laioffer.onlineorder.platform.ApiException;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.CustomerRepository;
 import com.laioffer.onlineorder.service.CustomerService;
@@ -88,5 +89,16 @@ public class CustomerServiceTests {
 
         Assertions.assertEquals(expected, result);
         Mockito.verify(customerRepository).findByEmail(email);
+    }
+
+    @Test
+    void signUp_withATakenEmail_isAConflictAndCreatesNothing() {
+        Mockito.when(userDetailsManager.userExists("taken@example.com")).thenReturn(true);
+
+        ApiException e = Assertions.assertThrows(ApiException.class,
+                () -> customerService.signUp(" Taken@Example.com ", "password123", "A", "B"));
+
+        Assertions.assertEquals("EMAIL_TAKEN", e.code());
+        Mockito.verify(userDetailsManager, Mockito.never()).createUser(Mockito.any());
     }
 }

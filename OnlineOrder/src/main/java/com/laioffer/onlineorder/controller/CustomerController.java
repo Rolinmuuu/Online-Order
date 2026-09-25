@@ -1,5 +1,6 @@
 package com.laioffer.onlineorder.controller;
 
+import jakarta.validation.Valid;
 
 import com.laioffer.onlineorder.model.RegisterBody;
 import com.laioffer.onlineorder.service.CustomerService;
@@ -24,7 +25,7 @@ public class CustomerController {
 
     @PostMapping("/signup")
     @ResponseStatus(value = HttpStatus.CREATED)
-    public void signUp(@RequestBody RegisterBody body) {
+    public void signUp(@Valid @RequestBody RegisterBody body) {
         customerService.signUp(body.email(), body.password(), body.firstName(), body.lastName());
     }
 }

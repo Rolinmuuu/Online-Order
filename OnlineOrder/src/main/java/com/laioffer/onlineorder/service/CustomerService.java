@@ -1,5 +1,7 @@
 package com.laioffer.onlineorder.service;
 
+import com.laioffer.onlineorder.platform.ApiException;
+import java.util.Locale;
 
 import com.laioffer.onlineorder.entity.CartEntity;
 import com.laioffer.onlineorder.entity.CustomerEntity;
@@ -32,7 +34,10 @@ public class CustomerService {
 
     @Transactional
     public void signUp(String email, String password, String firstName, String lastName) {
-        email = email.toLowerCase();
+        email = email.trim().toLowerCase(Locale.ROOT);
+        if (userDetailsManager.userExists(email)) {
+            throw ApiException.conflict("EMAIL_TAKEN", "an account with this e-mail already exists");
+        }
         UserDetails user = User.builder()
                 .username(email)
                 .password(passwordEncoder.encode(password))
