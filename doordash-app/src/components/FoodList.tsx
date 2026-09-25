@@ -13,13 +13,21 @@ const StockBadge = ({ left }: { left: number | undefined }) => {
 };
 
 const FoodList = () => {
-  const { cart, restaurants, stock, refreshCart } = useCart();
+  const { cart, restaurants, stock, refreshCart, refreshStock } = useCart();
   const [current, setCurrent] = useState<number | null>(null);
   const [adding, setAdding] = useState<number | null>(null);
 
   useEffect(() => {
     if (!current && restaurants[0]) setCurrent(restaurants[0].id);
   }, [restaurants, current]);
+
+  // Stock changes behind the customer's back (other orders, cancellations, expired holds):
+  // re-read it whenever the menu is shown and every 15 s while it stays open.
+  useEffect(() => {
+    refreshStock();
+    const timer = setInterval(refreshStock, 15_000);
+    return () => clearInterval(timer);
+  }, [refreshStock]);
 
   const restaurant = useMemo(() => restaurants.find((r) => r.id === current), [restaurants, current]);
   const cartRestaurant = cart?.order_items?.[0]?.restaurant_id ?? null;
