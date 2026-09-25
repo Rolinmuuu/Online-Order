@@ -1,117 +1,100 @@
-import { Button, Card, List, message, Select, Tooltip } from "antd";
-import { useEffect, useState } from "react";
-import { addItemToCart, getMenus, getRestaurants } from "../utils";
+import { useEffect, useMemo, useState } from "react";
+import { Button, Modal, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
+import { addToCart, clearCart, money, toCents } from "../api";
 import { useCart } from "../context/CartContext";
+import MyCart from "./MyCart";
 
-const { Option } = Select;
-
-const AddToCartButton = ({ itemId }) => {
-  const [loading, setLoading] = useState(false);
-  const { refreshCart } = useCart();
-  const AddToCart = () => {
-    setLoading(true);
-    addItemToCart(itemId)
-      .then(() => {
-        message.success("Added to cart!");
-        refreshCart();
-      })
-      .catch(() => {
-        message.error("Failed to add to cart. Try again later.");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  };
-
-  return (
-    <Tooltip title="Add to shopping cart">
-      <Button
-        icon={<PlusOutlined />}
-        onClick={AddToCart}
-        loading={loading}
-        type="primary"
-      />
-    </Tooltip>
-  );
+const StockBadge = ({ left }) => {
+  if (left === undefined) return null;
+  if (left === 0) return <span className="stock out">Sold out today</span>;
+  return <span className={`stock ${left <= 5 ? "low" : ""}`}>Only {left} left today</span>;
 };
 
 const FoodList = () => {
-  const [foodData, setFoodData] = useState([]);
-  const [curRest, setCurRest] = useState(null);
-  const [restaurants, setRestaurants] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [loadingRest, setLoadingRest] = useState(false);
+  const { cart, restaurants, stock, refreshCart } = useCart();
+  const [current, setCurrent] = useState(null);
+  const [adding, setAdding] = useState(null);
 
   useEffect(() => {
-    setLoadingRest(true);
-    getRestaurants()
-      .then((data) => {
-        setRestaurants(data);
-      })
-      .catch((err) => {
-        message.error("Can't get restaurants. Please try again later.");
-      })
-      .finally(() => {
-        setLoadingRest(false);
-      });
-  }, []);
+    if (!current && restaurants.length) setCurrent(restaurants[0].id);
+  }, [restaurants, current]);
 
-  useEffect(() => {
-    if (curRest) {
-      setLoading(true);
-      getMenus(curRest)
-        .then((data) => {
-          setFoodData(data);
+  const restaurant = useMemo(() => restaurants.find((r) => r.id === current), [restaurants, current]);
+  const cartRestaurant = cart && cart.order_items && cart.order_items.length ? cart.order_items[0].restaurant_id : null;
+
+  const add = async (item) => {
+    // One restaurant per order, like the backend enforces: offer to start a new cart.
+    if (cartRestaurant && cartRestaurant !== item.restaurant_id) {
+      const from = restaurants.find((r) => r.id === cartRestaurant);
+      const ok = await new Promise((resolve) =>
+        Modal.confirm({
+          title: "Start a new cart?",
+          content: `Your cart has items from ${from ? from.name : "another restaurant"}. An order can only come from one kitchen.`,
+          okText: "Start new cart",
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
         })
-        .catch((err) => {
-          message.error("Can't get menu. Please try again later.");
-        })
-        .finally(() => {
-          setLoading(false);
-        });
+      );
+      if (!ok) return;
+      await clearCart();
     }
-  }, [curRest]);
+    setAdding(item.id);
+    try {
+      await addToCart(item.id);
+      await refreshCart();
+    } catch {
+      message.error("Could not add it to your cart");
+    } finally {
+      setAdding(null);
+    }
+  };
 
   return (
-    <>
-      <Select
-        value={curRest}
-        onSelect={(value) => setCurRest(value)}
-        placeholder="Select a restaurant"
-        loading={loadingRest}
-        style={{ width: 300 }}
-        onChange={() => {}}
-      >
-        {restaurants.map((item) => {
-          return <Option value={item.id}>{item.name}</Option>;
-        })}
-      </Select>
-      {curRest && (
-        <List
-          style={{ marginTop: 20 }}
-          loading={loading}
-          dataSource={foodData}
-          renderItem={(item) => {
-            return (
-              <List.Item>
-                <Card
-                  title={item.name}
-                  extra={<AddToCartButton itemId={item.id} />}
-                >
-                  <img
-                    src={item.image_url}
-                    alt={item.name}
-                    style={{ width: "100%", display: "block" }}
-                  />
-                  {`price: $${item.price}`}
-                </Card>
-              </List.Item>
-            );
-          }}
-        ></List>
-      )}
-    </>
+    <main className="page">
+      <div className="eyebrow">Tonight's kitchens</div>
+      <h1 style={{ fontSize: 38 }}>What are you craving?</h1>
+      <p className="lead">Dishes marked "left today" are cooked in limited batches. Your portion is held the moment you place the order.</p>
+
+      <div className="rest-tabs">
+        {restaurants.map((r) => (
+          <button key={r.id} className={`rest-tab ${r.id === current ? "active" : ""}`} onClick={() => setCurrent(r.id)}>
+            <img src={r.image_url} alt="" />
+            <div><strong>{r.name}</strong><span>{r.address}</span></div>
+          </button>
+        ))}
+      </div>
+
+      <div className="menu-layout">
+        <section className="dish-grid">
+          {restaurant &&
+            (restaurant.menu_items || []).map((item) => {
+              const left = stock[item.id];
+              const item2 = { ...item, restaurant_id: restaurant.id };
+              return (
+                <article className="dish" key={item.id}>
+                  <div className="dish-img">
+                    <img src={item.image_url} alt="" />
+                    <StockBadge left={left} />
+                  </div>
+                  <div className="dish-body">
+                    <h3>{item.name}</h3>
+                    <p>{item.description}</p>
+                    <div className="dish-foot">
+                      <span className="price">{money(toCents(item.price))}</span>
+                      <Button type="primary" icon={<PlusOutlined />} disabled={left === 0}
+                              loading={adding === item.id} onClick={() => add(item2)}>
+                        Add
+                      </Button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+        </section>
+        <MyCart />
+      </div>
+    </main>
   );
 };
 
