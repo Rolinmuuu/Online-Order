@@ -2,6 +2,7 @@ package com.laioffer.onlineorder.ordering;
 
 import com.laioffer.onlineorder.inventory.InventoryService;
 import com.laioffer.onlineorder.platform.ApiException;
+import com.laioffer.onlineorder.platform.BusinessMetrics;
 import com.laioffer.onlineorder.platform.Outbox;
 import com.laioffer.onlineorder.platform.OrderUpdates;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -91,6 +92,7 @@ public class Orders {
         jdbc.update("INSERT INTO order_events (order_id, from_status, to_status, actor) VALUES (?, NULL, 'PLACED', ?)",
                 o.id(), actor);
         notifyCustomer(o, OrderStatus.PLACED, null);
+        BusinessMetrics.countOnCommit("orders.transitions", "from", "NONE", "to", "PLACED", "actor", actor);
     }
 
     /**
@@ -114,6 +116,7 @@ public class Orders {
         }
         jdbc.update("INSERT INTO order_events (order_id, from_status, to_status, actor, reason) VALUES (?, ?, ?, ?, ?)",
                 o.id(), from.name(), to.name(), actor, reason);
+        BusinessMetrics.countOnCommit("orders.transitions", "from", from.name(), "to", to.name(), "actor", actor);
         Order changed = new Order(o.id(), o.customerId(), o.restaurantId(), to, o.totalCents(), o.payBy(),
                 o.createdAt(), to == OrderStatus.CANCELLED ? reason : o.cancelReason());
         notifyCustomer(changed, to, reason);

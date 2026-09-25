@@ -1,7 +1,16 @@
 package com.laioffer.onlineorder;
 
 
+import org.springframework.boot.actuate.autoconfigure.web.server.ManagementPortType;
+import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
+import org.springframework.boot.web.context.WebServerApplicationContext;
+import org.springframework.context.ApplicationContext;
+import org.springframework.core.env.Environment;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.boot.autoconfigure.security.servlet.PathRequest;
+import org.springframework.core.annotation.Order;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -48,7 +57,34 @@ public class AppConfig {
     }
 
 
+    /**
+     * Actuator endpoints. Health is open (orchestrator probes). The rest (metrics, Prometheus)
+     * only answer on the separate management port, which is not exposed to the internet; if an
+     * operator ever moves them onto the public port they are denied rather than leaked.
+     */
     @Bean
+    @Order(1)
+    public SecurityFilterChain actuatorFilterChain(HttpSecurity http, ApplicationContext app,
+                                                   Environment environment) throws Exception {
+        boolean separatePort = ManagementPortType.get(environment) == ManagementPortType.DIFFERENT;
+        // Compared with the port the public server actually bound (also right for port 0).
+        RequestMatcher onManagementPort = request -> separatePort
+                && app instanceof WebServerApplicationContext web
+                && request.getLocalPort() != web.getWebServer().getPort();
+        http
+                .securityMatcher(EndpointRequest.toAnyEndpoint())
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(EndpointRequest.to(HealthEndpoint.class)).permitAll()
+                        .requestMatchers(onManagementPort).permitAll()
+                        .anyRequest().denyAll())
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        return http.build();
+    }
+
+
+    @Bean
+    @Order(2)
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)

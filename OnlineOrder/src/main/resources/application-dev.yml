@@ -1,0 +1,11 @@
+# Local debugging: SQL statements and raw HTTP requests. SPRING_PROFILES_ACTIVE=dev.
+# Never in production: raw requests include session cookies and login form passwords.
+logging:
+  level:
+    org.apache.coyote.http11.Http11InputBuffer: TRACE
+    org.springframework.jdbc.core: DEBUG
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0

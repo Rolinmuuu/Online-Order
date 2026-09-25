@@ -1,4 +1,7 @@
 server:
+  # On SIGTERM stop accepting requests and let in-flight ones finish (up to the timeout below)
+  # before the connection pool and the outbox dispatcher shut down.
+  shutdown: graceful
   servlet:
     session:
       cookie:
@@ -17,6 +20,8 @@ app:
     enabled: ${BACKGROUND_JOBS:true}
 
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_GRACE:20s}
   task:
     scheduling:
       pool:
@@ -58,7 +63,49 @@ outbox:
   poll-ms: 500
 
 logging:
+  # Plain text locally. In containers LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs switches to one JSON
+  # object per line (with trace and span ids), which log pipelines index without parsing rules.
   level:
-    org.apache.coyote.http11.Http11InputBuffer: TRACE # Incoming HTTP requests
-    org.springframework.jdbc.datasource.init: DEBUG
-    org.springframework.jdbc.core: DEBUG # SQL
+    root: INFO
+  # SQL and raw-request logging live in application-dev.yml (SPRING_PROFILES_ACTIVE=dev): raw
+  # requests contain session cookies and login passwords and must never be logged in production.
+
+management:
+  server:
+    # Actuator on its own port: the load balancer only forwards 8080, so metrics and health
+    # details are reachable from inside the network (Prometheus, the orchestrator), not the internet.
+    port: ${MANAGEMENT_PORT:8081}
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true      # /actuator/health/liveness and /readiness for the orchestrator
+      show-details: always # only on the internal port
+  health:
+    # Redis only caches menus; its outage degrades latency, it must not take the instance out of rotation.
+    redis:
+      enabled: false
+  metrics:
+    tags:
+      application: online-order
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true   # histogram buckets, so p95/p99 can be aggregated across instances
+      slo:
+        http.server.requests: 50ms, 100ms, 300ms, 1s
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:0.1}
+  # Traces are exported only when MANAGEMENT_OTLP_TRACING_ENDPOINT is set (e.g.
+  # http://otel-collector:4318/v1/traces). Without it trace ids still appear in the logs and the
+  # X-Trace-Id header.
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: online-order

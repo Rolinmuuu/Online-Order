@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.ordering.OrderCancelled;
 import com.laioffer.onlineorder.ordering.OrderStatus;
 import com.laioffer.onlineorder.ordering.Orders;
 import com.laioffer.onlineorder.platform.ApiException;
+import com.laioffer.onlineorder.platform.BusinessMetrics;
 import com.laioffer.onlineorder.platform.Outbox;
 import com.laioffer.onlineorder.platform.Tx;
 import org.springframework.context.event.EventListener;
@@ -94,6 +95,18 @@ public class PaymentService {
      * or rejected. Throws 401 for a bad signature.
      */
     public String handleWebhook(String body, String signatureHeader) {
+        String outcome;
+        try {
+            outcome = applyWebhook(body, signatureHeader);
+        } catch (ApiException e) {
+            BusinessMetrics.count("payments.webhooks", "outcome", e.code().toLowerCase());
+            throw e;
+        }
+        BusinessMetrics.count("payments.webhooks", "outcome", outcome);
+        return outcome;
+    }
+
+    private String applyWebhook(String body, String signatureHeader) {
         if (!signature.verify(body, signatureHeader)) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "BAD_SIGNATURE", "webhook signature is invalid or expired");
         }

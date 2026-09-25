@@ -95,8 +95,10 @@ public class OutboxDispatcher {
                 handler.handle(m.id(), payload); // no transaction open while calling out
                 markDelivered(m.id());
             }
+            BusinessMetrics.count("outbox.deliveries", "topic", m.topic(), "result", "delivered");
         } catch (RuntimeException e) {
             reschedule(m, e.getClass().getSimpleName() + ": " + e.getMessage());
+            BusinessMetrics.count("outbox.deliveries", "topic", m.topic(), "result", "failed");
         }
     }
 
