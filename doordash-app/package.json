@@ -16,6 +16,9 @@
     "@fontsource/fraunces": "^5.2.5",
     "@fontsource/inter": "^5.2.5"
   },
+  "devDependencies": {
+    "typescript": "^4.9.5"
+  },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
