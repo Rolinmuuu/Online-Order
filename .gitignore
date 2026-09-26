@@ -1,1 +1,4 @@
 .DS_Store
+
+# Redis snapshot written when redis-server runs from the repository root
+dump.rdb
