@@ -50,7 +50,7 @@ The same problems as [SocialAI](https://github.com/Rolinmuuu/Social-AI-Backend) 
 | Idempotency | Redis `SET NX` | a unique key claimed inside the business transaction |
 | Hard part | read fan-out, hot documents | write contention: stock, payments, state races |
 
-Why this project does not use microservices, and the other decisions, are in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, written as decision records. Measured throughput and the bottleneck analysis are in **[docs/SCALING.md](docs/SCALING.md)**. SLOs, alerts and the runbook for each are in **[docs/OPERATIONS.md](docs/OPERATIONS.md)**. The AWS target design is in **[docs/CLOUD.md](docs/CLOUD.md)** (a design only, not deployed).
+Why this project does not use microservices, and the other decisions, are in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, written as decision records. Measured throughput and the bottleneck analysis, for the checkout transaction alone and end to end over HTTP with k6 (checkout p99 213 ms at 64 concurrent buyers, none oversold), are in **[docs/SCALING.md](docs/SCALING.md)**. SLOs, alerts and the runbook for each are in **[docs/OPERATIONS.md](docs/OPERATIONS.md)**. The AWS target design is in **[docs/CLOUD.md](docs/CLOUD.md)** (a design only, not deployed).
 
 ## Guarantees and the test behind each
 

@@ -2,3 +2,6 @@
 
 # Redis snapshot written when redis-server runs from the repository root
 dump.rdb
+
+# k6 output
+loadtest/last-summary.json

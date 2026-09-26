@@ -47,6 +47,48 @@ negative).
    much higher commit rates it could, and the fix would be to notify from the outbox dispatcher
    instead of the business transaction.
 
+## End to end over HTTP
+
+`CheckoutBenchmark` above isolates the checkout transaction. The k6 test in
+[`loadtest/checkout.js`](../loadtest/checkout.js) measures what a customer experiences: Tomcat,
+Spring Security with a database-backed session, JSON, and the transaction, with the monitoring
+and background jobs running.
+
+**Setup.** Customers ramp 16 → 32 → 64 over 85 s, each signed into their own account, each
+iteration adding one dish and checking out with an `Idempotency-Key`. Half of the checkouts
+want the same limited dish (400 in stock), half an unlimited one. Alongside, 50 menu reads per
+second. Machine: 4 vCPUs, 15 GB, with the application, PostgreSQL 16 **and k6 on the same
+machine**, so again compare shapes rather than absolute numbers. Three runs; the middle one:
+
+| | p50 | p95 | p99 |
+|---|---|---|---|
+| checkout, unlimited dish | 60 ms | 155 ms | 218 ms |
+| checkout, contended dish | 55 ms | 147 ms | 209 ms |
+| **checkout, all (SLO: p99 < 300 ms)** | **58 ms** | **152 ms** | **213 ms** |
+| menu | 12 ms | 31 ms | 57 ms |
+
+About 85 orders/s and 500 HTTP requests/s in total. The limited dish sold exactly 400 of 400 in
+every run; the other buyers got `409 OUT_OF_STOCK`; 100% of the answers were an order or a
+sold-out, and all four correctness gauges read 0 afterwards. The thresholds in the script fail
+the run if the checkout p99 crosses 300 ms or more than 1% of checkouts fail.
+
+**Where the time goes.** Sampled at 64 customers: CPU 0.5% idle (the application 2.5 cores,
+PostgreSQL 1.15, k6 0.25); all 10 pooled connections busy, with 26 to 40 requests waiting for
+one. A lone checkout takes about 2 ms (table above), so a 58 ms median is mostly waiting: first
+for a connection, then for CPU. Two consequences:
+
+1. **A bigger pool would not help on this machine**, because the CPU is already saturated; it
+   would only move the queue from the pool into PostgreSQL. With the database on its own host,
+   the pool size becomes the knob, sized against the database's cores, not the request count.
+2. **The contended dish is not the bottleneck at this rate.** Its p99 is no worse than the
+   unlimited dish's: at ~40 hot checkouts per second the inventory row lock is held for a
+   fraction of a millisecond each (ADR 3), and once the dish sells out those checkouts fail
+   fast and roll back. The row lock only dominates at the rates of the flash-sale rows above.
+
+The next measurement worth making is a CPU profile of the application under this load, to
+see what share goes to per-request work that could be cut (the session lookup, security
+filters, JSON) versus the transaction itself.
+
 ## Where it goes next, in order
 
 | Limit | Symptom | Next step |
@@ -59,6 +101,10 @@ negative).
 
 ## Reproduce
 
-Run `com.laioffer.onlineorder.it.CheckoutBenchmark.main` (test sources; optional argument: orders
+HTTP: start the app with `RATE_LIMIT_ENABLED=false` (the test signs in 100 accounts from one
+address), then `loadtest/run.sh` (sets the hot dish's stock to 400 and runs k6; needs `psql` and
+`k6` on the path).
+
+Transaction only: run `com.laioffer.onlineorder.it.CheckoutBenchmark.main` (test sources; optional argument: orders
 per scenario, default 2000) from the IDE or on the test classpath, with `TEST_DATABASE_URL`
 pointing at a **disposable** database: the schema is dropped and recreated for every scenario.
