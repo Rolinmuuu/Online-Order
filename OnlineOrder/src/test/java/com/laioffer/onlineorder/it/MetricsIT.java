@@ -82,4 +82,46 @@ class MetricsIT extends PostgresTestSupport {
         assertEquals(1, registry.get("orders.overdue.unpaid").gauge().value());
         assertEquals(0, registry.get("ledger.unbalanced.transactions").gauge().value());
     }
+
+    /** A broken metrics backend must not turn a committed checkout into an error for the customer. */
+    @Test
+    void aFailingMetricsRegistryDoesNotFailACommittedCheckout() {
+        java.util.concurrent.atomic.AtomicBoolean failing = new java.util.concurrent.atomic.AtomicBoolean();
+        // Every counter of this registry throws on increment once armed (a backend gone wrong).
+        io.micrometer.core.instrument.MeterRegistry broken = new SimpleMeterRegistry() {
+            @Override
+            protected io.micrometer.core.instrument.Counter newCounter(io.micrometer.core.instrument.Meter.Id id) {
+                io.micrometer.core.instrument.Counter real = super.newCounter(id);
+                return new io.micrometer.core.instrument.Counter() {
+                    @Override
+                    public void increment(double amount) {
+                        if (failing.get()) {
+                            throw new IllegalStateException("metrics backend is broken");
+                        }
+                        real.increment(amount);
+                    }
+
+                    @Override
+                    public double count() {
+                        return real.count();
+                    }
+
+                    @Override
+                    public io.micrometer.core.instrument.Meter.Id getId() {
+                        return id;
+                    }
+                };
+            }
+        };
+        Metrics.addRegistry(broken);
+        failing.set(true);
+        try {
+            long c = customer("brokenmetrics@test");
+            addToCart(c, 1, 1);
+            long orderId = checkout.checkout(c, null, null).id();
+            assertEquals(1, count("SELECT count(*) FROM orders WHERE id = ?", orderId));
+        } finally {
+            Metrics.removeRegistry(broken);
+        }
+    }
 }

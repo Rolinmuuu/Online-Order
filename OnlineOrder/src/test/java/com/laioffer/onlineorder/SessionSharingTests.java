@@ -35,7 +35,7 @@ class SessionSharingTests {
     private int start() {
         ConfigurableApplicationContext app = new SpringApplicationBuilder(OnlineOrderApplication.class)
                 // command-line arguments: they outrank application.yml (builder properties do not)
-                .run("--server.port=0", "--management.server.port=-1", "--app.background-jobs.enabled=false",
+                .run("--server.port=0", "--management.server.port=0", "--app.background-jobs.enabled=false",
                         "--spring.cache.type=simple", "--rate-limit.enabled=false");
         instances.add(app);
         return ((WebServerApplicationContext) app).getWebServer().getPort();

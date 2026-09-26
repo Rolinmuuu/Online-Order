@@ -107,6 +107,8 @@ The integration tests connect with `TEST_DATABASE_URL` (default `jdbc:postgresql
 
 ## API
 
+The full contract is **[docs/openapi.json](docs/openapi.json)** (OpenAPI 3), also served with Swagger UI at `http://localhost:8081/actuator/swagger-ui` (the internal management port). `OpenApiContractTests` fails the build when the running API and the committed file disagree, so every API change shows up as a diff in review.
+
 | Method | Path | Who | Notes |
 |---|---|---|---|
 | `POST` | `/signup`, `/login`, `/logout` | public | form login, session cookie; signup 400 `VALIDATION_FAILED` / 409 `EMAIL_TAKEN`; 429 `RATE_LIMITED` with `Retry-After` |

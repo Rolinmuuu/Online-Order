@@ -27,6 +27,8 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     // metrics in Prometheus format; traces (W3C traceparent) exported over OTLP when configured
+    // OpenAPI description and Swagger UI, served on the internal management port
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.17'
     implementation 'io.micrometer:micrometer-registry-prometheus'
     implementation 'io.micrometer:micrometer-tracing-bridge-otel'
     implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
@@ -43,6 +45,8 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // OpenApiContractTests compares the API with this file: a change to it must re-run the tests.
+    inputs.file('../docs/openapi.json')
 }
 
 // ── Frontend ──────────────────────────────────────────────────────────────────────────────

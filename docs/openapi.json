@@ -1,0 +1,867 @@
+{
+  "openapi" : "3.1.0",
+  "info" : {
+    "description" : "Session-cookie API for the Online Order web client. Sign in with a form POST to /login\n(username, password); the SESSION cookie authenticates later calls.\n\nErrors are JSON: {\"error\": \"<CODE>\", \"message\": \"...\"}. Codes include OUT_OF_STOCK,\nPRICE_CHANGED (with total_cents), MIXED_RESTAURANTS, EMPTY_CART, STATUS_CHANGED,\nTOO_LATE_TO_CANCEL, IDEMPOTENCY_KEY_REUSED, VALIDATION_FAILED (with fields),\nEMAIL_TAKEN and RATE_LIMITED (429, with Retry-After).\n\nPOST /orders takes an Idempotency-Key header: reuse it when retrying the same\ncheckout and the server replays the first result instead of placing a second order.",
+    "license" : {
+      "name" : "MIT"
+    },
+    "title" : "Online Order API",
+    "version" : "1"
+  },
+  "security" : [ {
+    "session" : [ ]
+  } ],
+  "paths" : {
+    "/cart" : {
+      "get" : {
+        "operationId" : "getCart",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/CartDto"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "cart-controller" ]
+      },
+      "post" : {
+        "operationId" : "addToCart",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/AddToCartBody"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "cart-controller" ]
+      }
+    },
+    "/cart/checkout" : {
+      "post" : {
+        "operationId" : "checkout_1",
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "cart-controller" ]
+      }
+    },
+    "/cart/clear" : {
+      "post" : {
+        "operationId" : "checkout_2",
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "cart-controller" ]
+      }
+    },
+    "/inventory" : {
+      "get" : {
+        "operationId" : "availability",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "integer",
+                    "format" : "int32"
+                  }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "inventory-controller" ]
+      }
+    },
+    "/kitchen/orders/{id}/{action}" : {
+      "post" : {
+        "operationId" : "act",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "id",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }, {
+          "in" : "path",
+          "name" : "action",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/OrderView"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "kitchen-controller" ]
+      }
+    },
+    "/kitchen/restaurants" : {
+      "get" : {
+        "operationId" : "myRestaurants",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "type" : "object",
+                    "additionalProperties" : { }
+                  }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "kitchen-controller" ]
+      }
+    },
+    "/kitchen/restaurants/{rid}/orders" : {
+      "get" : {
+        "operationId" : "board",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "rid",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : { }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "kitchen-controller" ]
+      }
+    },
+    "/kitchen/restaurants/{rid}/stream" : {
+      "get" : {
+        "operationId" : "stream_1",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "rid",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "text/event-stream" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/SseEmitter"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "kitchen-controller" ]
+      }
+    },
+    "/login" : {
+      "post" : {
+        "requestBody" : {
+          "content" : {
+            "application/x-www-form-urlencoded" : {
+              "schema" : {
+                "type" : "object",
+                "properties" : {
+                  "password" : {
+                    "type" : "string",
+                    "format" : "password"
+                  },
+                  "username" : {
+                    "type" : "string"
+                  }
+                },
+                "required" : [ "password", "username" ]
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "signed in"
+          },
+          "401" : {
+            "description" : "wrong e-mail or password"
+          },
+          "429" : {
+            "description" : "RATE_LIMITED; see Retry-After"
+          }
+        },
+        "security" : [ ],
+        "summary" : "Sign in; sets the SESSION cookie",
+        "tags" : [ "session" ]
+      }
+    },
+    "/logout" : {
+      "post" : {
+        "responses" : {
+          "200" : {
+            "description" : "signed out"
+          }
+        },
+        "summary" : "Sign out; ends the session on every instance",
+        "tags" : [ "session" ]
+      }
+    },
+    "/me" : {
+      "get" : {
+        "operationId" : "me",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : { }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "account-controller" ]
+      }
+    },
+    "/orders" : {
+      "get" : {
+        "operationId" : "list",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/OrderView"
+                  }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "order-controller" ]
+      },
+      "post" : {
+        "operationId" : "checkout",
+        "parameters" : [ {
+          "in" : "header",
+          "name" : "Idempotency-Key",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CheckoutBody"
+              }
+            }
+          }
+        },
+        "responses" : {
+          "201" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/OrderView"
+                }
+              }
+            },
+            "description" : "Created"
+          }
+        },
+        "tags" : [ "order-controller" ]
+      }
+    },
+    "/orders/stream" : {
+      "get" : {
+        "operationId" : "stream",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "text/event-stream" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/SseEmitter"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "order-controller" ]
+      }
+    },
+    "/orders/{id}" : {
+      "get" : {
+        "operationId" : "get",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "id",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/OrderView"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "order-controller" ]
+      }
+    },
+    "/orders/{id}/cancel" : {
+      "post" : {
+        "operationId" : "cancel",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "id",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/OrderView"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "order-controller" ]
+      }
+    },
+    "/orders/{id}/pay" : {
+      "post" : {
+        "operationId" : "pay",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "id",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/PayBody"
+              }
+            }
+          }
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/PaymentView"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "payment-controller" ]
+      }
+    },
+    "/payments/webhook" : {
+      "post" : {
+        "operationId" : "webhook",
+        "parameters" : [ {
+          "in" : "header",
+          "name" : "X-Payment-Signature",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "type" : "string"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "string"
+                  }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "payment-controller" ]
+      }
+    },
+    "/restaurant/{restaurantId}/menu" : {
+      "get" : {
+        "operationId" : "getMenuByRestaurant",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "restaurantId",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/MenuItemEntity"
+                  }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "menu-controller" ]
+      }
+    },
+    "/restaurants/menu" : {
+      "get" : {
+        "operationId" : "getMenuForAllRestaurants",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/RestaurantDto"
+                  }
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "tags" : [ "menu-controller" ]
+      }
+    },
+    "/signup" : {
+      "post" : {
+        "operationId" : "signUp",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/RegisterBody"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "201" : {
+            "description" : "Created"
+          }
+        },
+        "tags" : [ "customer-controller" ]
+      }
+    }
+  },
+  "components" : {
+    "schemas" : {
+      "AddToCartBody" : {
+        "type" : "object",
+        "properties" : {
+          "menuId" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "CartDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "orderItems" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/OrderItemDto"
+            }
+          },
+          "totalPrice" : {
+            "type" : "number",
+            "format" : "double"
+          }
+        }
+      },
+      "CheckoutBody" : {
+        "type" : "object",
+        "properties" : {
+          "expectedTotalCents" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "Event" : {
+        "type" : "object",
+        "properties" : {
+          "actor" : {
+            "type" : "string"
+          },
+          "at" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "fromStatus" : {
+            "type" : "string"
+          },
+          "reason" : {
+            "type" : "string"
+          },
+          "toStatus" : {
+            "type" : "string"
+          }
+        }
+      },
+      "Line" : {
+        "type" : "object",
+        "properties" : {
+          "menuItemId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "name" : {
+            "type" : "string"
+          },
+          "quantity" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "unitPriceCents" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "MenuItemDto" : {
+        "type" : "object",
+        "properties" : {
+          "description" : {
+            "type" : "string"
+          },
+          "id" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "imageUrl" : {
+            "type" : "string"
+          },
+          "name" : {
+            "type" : "string"
+          },
+          "price" : {
+            "type" : "number",
+            "format" : "double"
+          }
+        }
+      },
+      "MenuItemEntity" : {
+        "type" : "object",
+        "properties" : {
+          "description" : {
+            "type" : "string"
+          },
+          "id" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "imageUrl" : {
+            "type" : "string"
+          },
+          "name" : {
+            "type" : "string"
+          },
+          "price" : {
+            "type" : "number",
+            "format" : "double"
+          },
+          "restaurantId" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "OrderItemDto" : {
+        "type" : "object",
+        "properties" : {
+          "menuItemDescription" : {
+            "type" : "string"
+          },
+          "menuItemId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "menuItemImageUrl" : {
+            "type" : "string"
+          },
+          "menuItemName" : {
+            "type" : "string"
+          },
+          "orderItemId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "price" : {
+            "type" : "number",
+            "format" : "double"
+          },
+          "quantity" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "restaurantId" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "OrderView" : {
+        "type" : "object",
+        "properties" : {
+          "cancelReason" : {
+            "type" : "string"
+          },
+          "createdAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "customerId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "events" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/Event"
+            }
+          },
+          "id" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "lines" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/Line"
+            }
+          },
+          "payBy" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "paymentFailureReason" : {
+            "type" : "string"
+          },
+          "paymentStatus" : {
+            "type" : "string"
+          },
+          "restaurantId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "restaurantName" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "PLACED", "PAID", "ACCEPTED", "READY", "COMPLETED", "CANCELLED" ]
+          },
+          "totalCents" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "PayBody" : {
+        "type" : "object",
+        "properties" : {
+          "paymentMethod" : {
+            "type" : "string"
+          }
+        }
+      },
+      "PaymentView" : {
+        "type" : "object",
+        "properties" : {
+          "amountCents" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "orderId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "paymentRef" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string"
+          }
+        }
+      },
+      "RegisterBody" : {
+        "type" : "object",
+        "properties" : {
+          "email" : {
+            "type" : "string",
+            "format" : "email",
+            "maxLength" : 254,
+            "minLength" : 0
+          },
+          "firstName" : {
+            "type" : "string",
+            "maxLength" : 100,
+            "minLength" : 0
+          },
+          "lastName" : {
+            "type" : "string",
+            "maxLength" : 100,
+            "minLength" : 0
+          },
+          "password" : {
+            "type" : "string",
+            "maxLength" : 128,
+            "minLength" : 8
+          }
+        },
+        "required" : [ "email", "password" ]
+      },
+      "RestaurantDto" : {
+        "type" : "object",
+        "properties" : {
+          "address" : {
+            "type" : "string"
+          },
+          "id" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "imageUrl" : {
+            "type" : "string"
+          },
+          "menuItems" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/MenuItemDto"
+            }
+          },
+          "name" : {
+            "type" : "string"
+          },
+          "phone" : {
+            "type" : "string"
+          }
+        }
+      },
+      "SseEmitter" : {
+        "type" : "object",
+        "properties" : {
+          "timeout" : {
+            "type" : [ "integer", "null" ],
+            "format" : "int64"
+          }
+        }
+      }
+    },
+    "securitySchemes" : {
+      "session" : {
+        "in" : "cookie",
+        "name" : "SESSION",
+        "type" : "apiKey"
+      }
+    }
+  }
+}

@@ -83,7 +83,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health, info, prometheus, metrics
+        include: health, info, prometheus, metrics, openapi, swagger-ui
   endpoint:
     health:
       probes:
@@ -114,3 +114,10 @@ management:
 info:
   app:
     name: online-order
+
+springdoc:
+  # /actuator/openapi and /actuator/swagger-ui on the management port: API documentation for
+  # developers and tools, not published to the internet.
+  use-management-port: true
+  writer-with-order-by-keys: true   # stable output, so docs/openapi.json diffs are real changes
+  show-actuator: false
